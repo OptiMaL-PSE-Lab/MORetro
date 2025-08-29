@@ -1,0 +1,1 @@
+from moretro.inference.retro_prediction import TemplateModel
