@@ -1,0 +1,534 @@
+import gin
+import heapq
+import logging
+import numpy as np
+from rdkit import Chem
+from typing import Callable, cast
+from scipy.stats import qmc
+
+from moretro.search.node_type import MolNode, RxnNode
+from moretro.inference.and_or_graph import AndOrGraph
+from moretro.utils.typing_hints import (
+    Nodes,
+    SolutionCost,
+    ParetoCost,
+    MolsAndWeights,
+    MolNodeAndWeights,
+    CostVector,
+    WeightIndices,
+    NewSolution,
+)
+
+# Set up module logger
+logger = logging.getLogger(__name__)
+
+
+@gin.register(
+    denylist=["target, building_blocks, heuristic_fns,"]
+)  # TODO: add config files
+class MOGraph:
+    """
+    Multi-objective retrosynthesis search graph.
+
+    Parameters
+    ----------
+    target : str
+        Target molecule in SMILES format.
+    building_blocks : set[str]
+        Available starting materials.
+    heuristic_fns : list[Callable[[str], float]]
+        Objective functions for multi-objective optimization.
+    weight_samples : int, default 64
+        Total number of weight vectors to generate.
+    no_weights : int, default 5
+        Number of active weight vectors.
+    weight_initial : str, default "sobol"
+        Weight initialization method ("sobol" or "dirichlet")
+    include_extreme : bool, default False
+        Whether to include extreme points in the weight vectors (for sobol).
+    """
+
+    def __init__(
+        self,
+        target: str,
+        building_blocks: set[str],
+        heuristic_fns: list[
+            Callable[[str], float]
+        ],  # Objectives for the search planning
+        weight_samples: int = 64,
+        no_weights: int = 5,
+        weight_initial: str = "sobol",  # Type of weight initialization
+        include_extreme: bool = False,  # Include extreme points in weight vectors
+    ):
+        self.target = Chem.CanonSmiles(target)
+        self.building_blocks = [Chem.CanonSmiles(mol) for mol in building_blocks]
+        self.heuristic_fns = heuristic_fns
+        self.open_nodes: set[MolNode] = set()
+        self.weight_samples = weight_samples
+        self.no_weights = no_weights
+        self.weights_open: np.ndarray = np.zeros(
+            (self.weight_samples, len(self.heuristic_fns))
+        )
+        self.weight_history: list[list[float]] = []
+        self.solution_cost: SolutionCost = {}
+        self.pareto_front: ParetoCost = {}
+        self.mol_to_node: dict[str, MolNode] = {}
+        target_known = self.target in self.building_blocks
+        if target_known:
+            logging.info(f"Target {self.target} is already in the building blocks.")
+
+        self.target_node = MolNode(
+            smiles=self.target,
+            heuristic_fns=heuristic_fns,
+            depth=0,
+            is_known=target_known,
+            is_open=not target_known,
+            is_target=True,  # Mark this node as the target
+        )
+
+        self.graph = AndOrGraph()
+        if self.target_node.is_open:
+            self.graph.add_node(self.target, node_type="target")
+            # add open target node no_weights time to set in list
+            self.open_nodes.add(self.target_node)
+            self.mol_to_node[self.target] = self.target_node
+
+        self.weights_open = self.weight_initialization(
+            n_obj=len(heuristic_fns),
+            init_type=weight_initial,
+            include_extreme=include_extreme,  # or "dirichlet"
+        )
+        np.random.shuffle(self.weights_open)
+        # pop no_weights from weights_open into self.weights
+        self.weights = self.weights_open[
+            : self.no_weights, :
+        ]  # dimensions: (no_weights, n_obj)
+        self.weights_open = self.weights_open[self.no_weights :]
+
+    def expand_graph(
+        self,
+        predictions: dict[MolNode, list[dict]],
+        expanded_nodes: MolNodeAndWeights,
+    ) -> MolsAndWeights | None:
+        """
+        Expand graph with new reactions and molecules.
+
+        Parameters
+        ----------
+        predictions : dict[MolNode, list[dict]]
+            Synthesis predictions for each node. Each prediction contains
+            reactants, reagents, temperature, rxn_smiles, template, and costs.
+        expanded_nodes : set[tuple[MolNode, WeightIndices]]
+            Nodes to expand with their weight group indices.
+
+        Returns
+        -------
+        MolsAndWeights | None
+            Set of new nodes and their weight indices.
+        """
+        new_nodes = []
+        for node, weight_indices in expanded_nodes:
+            self.open_nodes.remove(node)
+            node.is_open = False
+            for pred in predictions[node]:
+                reactants = pred["reactants"]
+                reactants: list[str] = [
+                    Chem.CanonSmiles(reactant) for reactant in reactants
+                ]
+                reagents = pred["reagents"]
+                temp = pred["temperature"]
+                rxn_smiles = pred["rxn_smiles"]
+                template = pred["template"]
+                costs = pred[
+                    "costs"
+                ]  # * Costs should be calculated outside this class using ML surrogates
+                rxn_node = RxnNode(
+                    smiles=rxn_smiles,
+                    template=template,  # In SMARTS
+                    reagents=reagents,
+                    temp=temp,
+                    depth=node.depth + 1,
+                    cost=costs,
+                    weight_length=len(self.weights),
+                )
+
+                # Check for presence of cycles in the graph
+                cycle_exists = False
+                for reactant in reactants:
+                    if (
+                        reactant in self.mol_to_node
+                        and reactant in self.graph.get_ancestors(node)
+                    ):
+                        cycle_exists = True
+                        break
+
+                if cycle_exists:
+                    continue
+
+                self.graph.add_node(rxn_node, node_type="reaction")
+                self.graph.add_edge(node, rxn_node)
+
+                for reactant in reactants:
+                    if reactant in self.mol_to_node:
+                        reactant_node = self.mol_to_node[reactant]
+                    else:
+                        reactant_known = reactant in self.building_blocks
+                        reactant_node = MolNode(
+                            smiles=reactant,
+                            heuristic_fns=self.heuristic_fns,
+                            depth=node.depth + 2,
+                            is_known=reactant_known,
+                        )
+                        self.mol_to_node[reactant] = reactant_node
+                        self.graph.add_node(reactant_node, node_type="molecule")
+                        new_nodes.append((reactant_node, weight_indices))
+                    self.graph.add_edge(rxn_node, reactant_node)
+
+                new_nodes.append((rxn_node, weight_indices))
+
+        return set(new_nodes)
+
+    def update_values(self, nodes: MolsAndWeights) -> bool:
+        """
+        Update node values and Pareto front.
+
+        Parameters
+        ----------
+        nodes : MolsAndWeights
+            Nodes and weight indices to update.
+
+        Returns
+        -------
+        bool
+            True if Pareto front was updated.
+        """
+        nodes_to_update = nodes.copy()
+        updated_nodes, new_solutions = self.uppropagation(nodes_to_update)
+        nodes_to_update.update(updated_nodes)
+        self.downpropagation(nodes_to_update)
+        pareto_updated = self.update_solution_and_pareto(new_solutions)
+
+        return pareto_updated
+
+    def uppropagation(
+        self,
+        nodes_and_weights: MolsAndWeights,
+    ) -> tuple[MolsAndWeights, NewSolution]:
+        """
+        Propagate values upward from leaves to root.
+
+        Parameters
+        ----------
+        nodes_and_weights : MolsAndWeights
+            Starting nodes and their weight indices.
+
+        Returns
+        -------+
+        MolsAndWeights
+            Set of updated nodes and weight indices.
+        """
+        updated_nodes: MolsAndWeights = set()
+        new_solutions: dict[CostVector, WeightIndices] = {}
+
+        # Group nodes by weight indices
+        weight_groups = {}
+        for node, weight_indices in nodes_and_weights:
+            if weight_indices not in weight_groups:
+                weight_groups[weight_indices] = []
+            weight_groups[weight_indices].append(node)
+
+        # Process each weight group separately
+        #! when nodes want to expand nodes in the same synthesis path, these nodes must be in the same weight group
+        for weight_indices, nodes in weight_groups.items():
+            old_solutions = self.target_node.success_cost.keys()
+            old_solutions = set(old_solutions)
+            # Use priority queue for depth ordering within each weight group
+            queue = [(-node.depth, id(node), node) for node in nodes]
+            heapq.heapify(queue)
+            processed = set()
+
+            while queue:
+                _, node_id, node = heapq.heappop(queue)
+
+                if node_id in processed:
+                    continue
+                processed.add(node_id)
+
+                if isinstance(node, RxnNode):
+                    children = cast(list[MolNode], list(self.graph.successors(node)))
+                    parents_update = node.uppropagate(children, self.weights)
+                elif isinstance(node, MolNode):
+                    children = cast(list[RxnNode], list(self.graph.successors(node)))
+                    parents_update = node.uppropagate(children, self.weights)
+                else:
+                    raise TypeError(
+                        f"Node {node} is not of type RxnNode or MolNode, but {type(node)}"
+                    )
+
+                if parents_update:
+                    updated_nodes.add((node, weight_indices))
+                    for parent in list(self.graph.predecessors(node)):
+                        parent = cast(RxnNode | MolNode, parent)
+                        parent_id = id(parent)
+                        if parent_id not in processed:
+                            heapq.heappush(queue, (-parent.depth, parent_id, parent))
+
+            current_solution = self.target_node.success_cost.keys()
+            current_solution = set(current_solution)
+            new_costs = current_solution.difference(old_solutions)
+            if new_costs:
+                new_solutions.update({cost: weight_indices for cost in new_costs})
+
+        return (updated_nodes, new_solutions)
+
+    def downpropagation(self, nodes: MolsAndWeights) -> set[Nodes]:
+        """
+        Propagate values downward from root to leaves.
+
+        Parameters
+        ----------
+        nodes : MolsAndWeights
+            Starting nodes and weight indices.
+
+        Returns
+        -------
+        set[Nodes]
+            Set of updated nodes.
+        """
+        # Use priority queue to maintain depth order (positive depth for min-heap behavior)
+        queue = [(node[0].depth, id(node[0]), node[0]) for node in nodes]
+        heapq.heapify(queue)
+        updated_nodes = set()
+        processed = set()  # Track processed nodes to avoid duplicates
+
+        while queue:
+            _, node_id, node = heapq.heappop(queue)
+
+            # Skip if already processed
+            if node_id in processed:
+                continue
+            processed.add(node_id)
+
+            if isinstance(node, RxnNode):
+                parents = cast(list[MolNode], list(self.graph.predecessors(node)))
+                children_update = node.downpropagate(parents[0])
+            elif isinstance(node, MolNode):
+                parents = cast(list[RxnNode], list(self.graph.predecessors(node)))
+                children_update = node.downpropagate(parents)
+            else:
+                raise TypeError(
+                    f"Node {node} is not of type RxnNode or MolNode, but {type(node)}"
+                )
+
+            if children_update:
+                updated_nodes.add(node)
+                for child in self.graph.successors(node):
+                    child_id = id(child)
+                    if child_id not in processed:
+                        heapq.heappush(queue, (child.depth, child_id, child))
+
+        return updated_nodes
+
+    def update_solution_and_pareto(self, new_solutions: NewSolution) -> bool:
+        """
+        Update solution costs and Pareto front from new solutions.
+
+        Parameters
+        ----------
+        new_solutions : NewSolution
+            Dictionary mapping cost vectors to weight indices.
+
+        Returns
+        -------
+        bool
+            True if Pareto front was updated.
+        """
+        pareto_updated = False
+
+        for cost_vector, weight_indices in new_solutions.items():
+            # Get the path information from target node's success_cost
+            path_nodes = self.target_node.success_cost[cost_vector]
+
+            # Transform local weight indices to global indices
+            global_weight_indices = tuple(
+                len(self.weight_history) + i for i in weight_indices
+            )
+
+            # Store the new solution with path and global indices
+            self.solution_cost[cost_vector] = (path_nodes, global_weight_indices)
+
+            # Check if this should be added to Pareto front
+            if self.pareto_check_helper(cost_vector, weight_indices):
+                pareto_updated = True
+
+        return pareto_updated
+
+    def pareto_check_helper(
+        self, cost_vector: CostVector, weight_indices: WeightIndices
+    ) -> bool:
+        """
+        Helper function for checking Pareto dominance and update front.
+
+        Parameters
+        ----------
+        cost_vector : CostVector
+            Cost vector to check for dominance.
+        weight_indices : WeightIndices (tuple[int, ...])
+            Weight indices associated with the cost vector.
+
+        Returns
+        -------
+        bool
+            True if Pareto front was updated.
+        """
+        should_add_to_pareto = True
+        pareto_updated = False
+        points_to_remove = []
+
+        for pareto_cost in list(self.pareto_front.keys()):
+            # Check if new solution is dominated by existing Pareto point
+            if all(p <= c for p, c in zip(pareto_cost, cost_vector)) and any(
+                p < c for p, c in zip(pareto_cost, cost_vector)
+            ):
+                should_add_to_pareto = False
+                break
+
+            # Check if existing Pareto point is dominated by new solution
+            elif all(c <= p for c, p in zip(cost_vector, pareto_cost)) and any(
+                c < p for c, p in zip(cost_vector, pareto_cost)
+            ):
+                points_to_remove.append(pareto_cost)
+
+        # Remove dominated points
+        for point in points_to_remove:
+            del self.pareto_front[point]
+            pareto_updated = True
+
+        # Add new point if not dominated
+        if should_add_to_pareto:
+            weights = [
+                self.weights[i].tolist()
+                for i in weight_indices
+                if i < len(self.weights)
+            ]
+            self.pareto_front[cost_vector] = weights
+            logger.info(f"Added new Pareto point: {cost_vector} with weights {weights}")
+            pareto_updated = True
+
+        return pareto_updated
+
+    def reinitialize_graph(self):
+        """
+        Spawn new weights and reinitialize all node values.
+        """
+        logger.info("Reinitializing values in search graph")
+        self.update_weights()
+        open_nodes = [
+            node for node in self.mol_to_node.values() if node.is_open or node.is_known
+        ]
+        if not open_nodes:
+            logger.warning("No open nodes found in the graph for reinitialization.")
+        else:
+            open_nodes_with_weights = [(open_node, (0,)) for open_node in open_nodes]
+            updated_nodes: MolsAndWeights = set(open_nodes_with_weights)
+            new_nodes, _ = self.uppropagation(updated_nodes)
+            updated_nodes.update(new_nodes)
+            downprop_result = self.downpropagation(
+                updated_nodes
+            )  # all nodes in the graph should be updated, hence assert this
+            assert len(downprop_result) == len(self.graph.nodes)
+
+    def update_weights(self):
+        """
+        Update active weights from weight pool.
+        """
+        # TODO decide if one should do "smart updating based on sampled weights"
+        self.weight_history.extend(self.weights.tolist())
+        self.weights = self.weights_open[: self.no_weights, :]
+        self.weights_open = self.weights_open[self.no_weights :]
+
+    def weight_initialization(
+        self, n_obj: int, init_type: str, include_extreme: bool
+    ) -> np.ndarray:
+        """
+        Initialize set of weights for linear combination of objectives using
+
+        Parameters:
+        -----------
+        n_obj : int
+            Number of objectives
+        init_type : str
+            Type of weight initialization to use. Options are "sobol" or "dirichlet".
+        include_extreme : bool
+            Whether to include extreme points in the weight vectors.
+
+        Returns:
+        --------
+        np.ndarrays
+        """
+        if init_type == "sobol":
+            return self._sobol_initialization(
+                n_obj, self.weight_samples, include_extreme
+            )
+        elif init_type == "dirichlet":
+            return np.random.dirichlet(np.ones(n_obj), size=self.weight_samples)
+        else:
+            raise ValueError(f"Unknown weight initialization type: {init_type}")
+
+    def _sobol_initialization(
+        self, n_obj: int, n_samples: int, include_extreme: bool
+    ) -> np.ndarray:
+        """
+        Generate Sobol sequence weight vectors with extreme points.
+
+        Parameters
+        ----------
+        n_obj : int
+            Number of objectives.
+        n_samples : int
+            Total number of weight vectors.
+        include_extreme : bool
+            Whether to include extreme points in the weight vectors.
+
+        Returns
+        -------
+        np.ndarray
+            Sobol-based weight vectors with extreme points.
+        """
+        # Reserve space for extreme points if requested
+        if include_extreme:
+            sobol_samples_needed = n_samples - n_obj
+        else:
+            sobol_samples_needed = n_samples
+
+        if sobol_samples_needed <= 0:
+            logger.warning(
+                f"Not enough samples ({n_samples}) for both Sobol and extreme points"
+            )
+            sobol_samples_needed = max(4, n_samples // 2)
+        elif sobol_samples_needed % 2 != 0:
+            logger.error(
+                f"Requested Sobol samples ({sobol_samples_needed}) must be a power of 2."
+            )
+            raise ValueError("Please re-adjust the number of samples")
+
+        sobol = qmc.Sobol(d=n_obj, scramble=True)
+        m = int(np.log2(sobol_samples_needed))
+        raw_samples = sobol.random_base2(m=m)
+
+        # Add small epsilon to avoid extreme weights (important for optimization)
+        epsilon = 0.01
+        raw_adjusted = raw_samples + epsilon
+
+        sobol_weights = raw_adjusted / raw_adjusted.sum(axis=1, keepdims=True)
+
+        # Create final weights array
+        if include_extreme:
+            extreme_points = np.eye(n_obj)
+            weights = np.vstack([sobol_weights, extreme_points])
+        else:
+            weights = sobol_weights
+        logger.info(
+            f"Generated {sobol_samples_needed} Sobol samples + {n_obj} extreme points = {n_samples} total weight vectors"
+        )
+        return weights
