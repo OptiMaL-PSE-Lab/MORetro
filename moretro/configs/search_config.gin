@@ -1,0 +1,25 @@
+import moretro.moretro_star
+
+# Checkpoint files
+retro_model="models/model_retro.pt"
+retro_templates = "models/idx2template_retro.json"
+building_blocks = "models/bb_mol2idx.json"
+
+# Weight Selection Parameters
+MOGraph.weight_samples = 66
+MOGraph.no_weights = 4
+MOGraph.weight_initial = "sobol"
+MOGraph.include_extreme = True
+ 
+# Search Parameters
+MOSearch.top_n = 50
+MOSearch.max_depth = 10
+MOSearch.iteration_budget = 2000
+MOSearch.weight_iter_budget = 100
+MOSearch.time_budget = 600
+MOSearch.weight_strategy = "it"
+
+# Retro model
+OneStepModel.model_type = "st"
+OneStepModel.checkpoint_path = %retro_model
+OneStepModel.template_path = %retro_templates
