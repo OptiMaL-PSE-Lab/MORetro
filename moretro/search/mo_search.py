@@ -1,4 +1,5 @@
 import logging
+import time
 import gin
 import numpy as np
 import torch  # type: ignore
@@ -15,7 +16,7 @@ from moretro.utils.typing_hints import MolNodeAndWeights, Nodes
 logger = logging.getLogger(__name__)
 
 
-@gin.register(denylist=["retro_model", "building_blocks", "heuristic_fns"])
+@gin.configurable(denylist=["target", "retro_model", "building_blocks", "heuristic_fns"])
 class MOSearch:
     """
     Class for guiding the search process
@@ -23,6 +24,7 @@ class MOSearch:
 
     def __init__(
         self,
+        target: str,
         retro_model: Callable[[list[MolNode], int], dict],
         building_blocks: set[str],
         heuristic_fns: list[Callable[[str], float]],
@@ -36,7 +38,7 @@ class MOSearch:
         self.max_depth = max_depth
         self.retro_model = retro_model
         self.search_graph = MOGraph(
-            target=gin.REQUIRED,  # type: ignore
+            target=target,
             building_blocks=building_blocks,
             heuristic_fns=heuristic_fns,
             weight_samples=gin.REQUIRED,  # type: ignore
@@ -175,7 +177,9 @@ class MOSearch:
         """
         logger.info("Starting multi-objective search process...")
         iter_counter = 0
-        while iter_counter < self.iteration_budget:
+        elapsed_time = 0
+        start_time = time.time()
+        while iter_counter < self.iteration_budget and elapsed_time < self.time_budget:
             torch.cuda.empty_cache()
             self.spawn_new_weights(iter_counter)
             if not self.search_graph.open_nodes:
@@ -185,3 +189,4 @@ class MOSearch:
             nodes_and_weights_to_expand = self.choose_next_nodes()
             self.retro_expansion(nodes_and_weights_to_expand)
             iter_counter += 1
+            elapsed_time = time.time() - start_time

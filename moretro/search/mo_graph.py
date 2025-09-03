@@ -23,9 +23,7 @@ from moretro.utils.typing_hints import (
 logger = logging.getLogger(__name__)
 
 
-@gin.register(
-    denylist=["target, building_blocks, heuristic_fns,"]
-)  # TODO: add config files
+@gin.configurable(denylist=["target", "building_blocks", "heuristic_fns"])  
 class MOGraph:
     """
     Multi-objective retrosynthesis search graph.
