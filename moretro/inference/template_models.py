@@ -33,7 +33,7 @@ class Dense(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.hidden_act(self.linear(x))
-    
+
 
 class TemplateModel(nn.Module):
     def __init__(self):
@@ -51,14 +51,26 @@ class TemplateModel(nn.Module):
     def _run_templates(self):
         pass
 
-    def _smi_to_fp(self, smiles: str, fp_size: int = 2048) -> torch.Tensor:
+    def _smis_to_fp(self, smiles: str | list[str], fp_size: int = 2048) -> torch.Tensor:
         """
-        Convert a SMILES string to a fingerprint tensor.
+        Convert a list of SMILES string to a fingerprint tensor.
         """
-        mol = Chem.MolFromSmiles(smiles)
-        fp = GetMorganFingerprintAsBitVect(mol, radius=2, nBits=fp_size, useChirality=True)
-        fp = torch.tensor(fp, dtype=torch.float)
-        return fp
+        fps = []
+        if isinstance(smiles, str):
+            smiles = [smiles]
+
+        for smi in smiles:
+            mol = Chem.MolFromSmiles(smi)
+            fp = GetMorganFingerprintAsBitVect(
+                mol, radius=2, nBits=fp_size, useChirality=True
+            )
+            fp = torch.tensor(fp, dtype=torch.float)
+            fps.append(fp)
+
+        if len(fps) == 1:
+            return fps[0]
+        return torch.stack(fps)
+
 
 class TemplRel(TemplateModel):
     def __init__(self, args):
@@ -95,35 +107,58 @@ class TemplRel(TemplateModel):
             layers.append(layer)
 
         return layers
-    
-    def predict(self, product: str, top_n: int, templates: dict) -> list[dict[str, Any]]:
-        target_fp = self._smi_to_fp(product)
-        target_rd = rdchiralReactants(product)
+
+    def predict(
+        self, products: str | list[str], top_n: int, templates: dict
+    ) -> list[list[dict[str, Any]]]:
+        # Handle both single product and list of products
+        if isinstance(products, str):
+            products = [products]
+            single_input = True
+        else:
+            single_input = False
+
+        target_fp = self._smis_to_fp(products)
+
+        # Get fingerprints and rdchiral reactants for each product
+        target_rds = []
+        for prod in products:
+            target_rds.append(rdchiralReactants(prod))
 
         with torch.no_grad():
             output = self(target_fp)
-        probs = torch.softmax(output, dim=0)
-        top_scores, top_indices = torch.topk(probs,top_n)
-        top_scores = top_scores.detach().numpy()
-        top_indices = top_indices.detach().numpy()
-        predictions = []
-        for i in range(top_n):
-            template = templates[top_indices[i]]
-            pred_reactants = self._run_templates(target_rd, template)
-            if len(pred_reactants) > 0:
-                for output in pred_reactants:
-                    predictions.append(
-                        {
-                            "score": top_scores[i],
-                            "reactants": output,
-                            "template": template,
-                        }
-                    )
-            else:
-                pass
 
-        predictions = self._postprocessing(predictions, product)
-        return predictions
+        # Process all products with the same logic
+        all_predictions = []
+        probs = torch.softmax(output, dim=1 if len(products) > 1 else 0)
+        
+        # Handle dimension for single vs multiple products
+        if single_input:
+            probs = probs.unsqueeze(0)  # Add batch dimension for consistency
+
+        for idx, (prod, target_rd) in enumerate(zip(products, target_rds)):
+            top_scores, top_indices = torch.topk(probs[idx], top_n)
+            top_scores = top_scores.detach().numpy()
+            top_indices = top_indices.detach().numpy()
+
+            predictions = []
+            for i in range(top_n):
+                template = templates[top_indices[i]]
+                pred_reactants = self._run_templates(target_rd, template)
+                if len(pred_reactants) > 0:
+                    for output_react in pred_reactants:
+                        predictions.append(
+                            {
+                                "score": top_scores[i],
+                                "reactants": output_react,
+                                "template": template,
+                            }
+                        )
+
+            predictions = self._postprocessing(predictions, prod)
+            all_predictions.append(predictions)
+
+        return all_predictions
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for layer in self.layers:
@@ -131,7 +166,7 @@ class TemplRel(TemplateModel):
             x = self.dropout(x)
         logits = self.output_layer(x)  # returning *unnormalized* logits
         return logits
-    
+
     def _run_templates(self, product: rdchiralReactants, template: str) -> list[str]:
         """
         Run the template given product and corresponding template
@@ -158,8 +193,8 @@ class TemplRel(TemplateModel):
             result.append(out.split("."))
         return result
 
-    def _postprocessing(self, predictions: list[dict], product:str) -> list[dict]:
-        """  
+    def _postprocessing(self, predictions: list[dict], product: str) -> list[dict]:
+        """
         Only retain unique reactants, templates and scores are added together
         """
         prec_to_score = {}
@@ -189,4 +224,3 @@ class TemplRel(TemplateModel):
             )
 
         return final_predictions
-        

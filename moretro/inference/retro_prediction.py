@@ -42,14 +42,14 @@ class OneStepModel:
             #* Add new models here
         self.model.eval()
 
-    def predict(self, target: str, top_n: int=50) -> list[dict[str, Any]]: # type: ignore
+    def predict(self, target: str | list[str], top_n: int=50) -> list[list[dict[str, Any]]]: # type: ignore
         """
-        Predict the retro reactions for a given molecule up to top_n reactions.
+        Predict the retro reactions for a given molecule or list of molecules up to top_n reactions.
 
         Parameters
         ----------
-        target : str
-            The SMILES representation of the target molecule.
+        target : str | list[str]
+            The SMILES representation of the target molecule or a list of SMILES strings.
         top_n : int
             The number of top predictions to return.
 
