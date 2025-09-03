@@ -6,7 +6,7 @@ import torch  # type: ignore
 from typing import Callable
 from collections import defaultdict
 
-
+from moretro.inference.retro_prediction import OneStepModel
 from moretro.search.mo_graph import MOGraph
 from moretro.search.node_type import RxnNode, MolNode
 from moretro.utils.typing_hints import MolNodeAndWeights, Nodes
@@ -16,7 +16,9 @@ from moretro.utils.typing_hints import MolNodeAndWeights, Nodes
 logger = logging.getLogger(__name__)
 
 
-@gin.configurable(denylist=["target", "retro_model", "building_blocks", "heuristic_fns"])
+@gin.configurable(
+    denylist=["target", "retro_model", "building_blocks", "heuristic_fns"]
+)
 class MOSearch:
     """
     Class for guiding the search process
@@ -25,7 +27,7 @@ class MOSearch:
     def __init__(
         self,
         target: str,
-        retro_model: Callable[[list[MolNode], int], dict],
+        retro_model: OneStepModel,
         building_blocks: set[str],
         heuristic_fns: list[Callable[[str], float]],
         top_n: int,
@@ -88,7 +90,11 @@ class MOSearch:
             else:
                 nodes.append(node)
 
-        predictions: dict[MolNode, list[dict]] = self.retro_model(nodes, self.top_n)
+        smiles = [node.smiles for node in nodes]
+        predictions = self.retro_model.predict(
+            smiles, self.top_n
+        )  # * adds predictions with costs
+        predictions = {node: preds for node, preds in zip(nodes, predictions)}
         new_nodes_and_weights = self.search_graph.expand_graph(
             predictions, nodes_and_weights
         )
