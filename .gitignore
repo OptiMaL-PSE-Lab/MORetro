@@ -1,4 +1,4 @@
 **.pyc
-/fluids/
-/weights/
 .vscode/
+models/
+logs/
