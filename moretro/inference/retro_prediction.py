@@ -4,7 +4,7 @@ import torch
 from logging import Logger
 from typing import Optional
 
-from moretro.inference.template_models import TemplRel
+from moretro.external.template_models import TemplRel
 from moretro.inference.calculate_costs import calculate_costs, COST_MAPPING
 from moretro.utils.typing_hints import Predictions
 from pathlib import Path
@@ -31,6 +31,7 @@ class OneStepModel:
         self.checkpoint_path = file_path.parent / checkpoint_path
         self.template_path = file_path.parent / template_path if template_path else None
         self.condition_model = ConditionPrediction(gin.REQUIRED) # type: ignore
+        logger.info(f"Loading Single-Step Model from {self.checkpoint_path}")
 
         self.cost_functions = []
         for cost_name in cost_functions:
