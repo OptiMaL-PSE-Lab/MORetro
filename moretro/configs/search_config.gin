@@ -1,9 +1,17 @@
 import moretro.moretro_star
 
 # Checkpoint files
-retro_model="models/model_retro.pt"
+retro_model = "models/model_retro.pt"
+condition_model ="models/model_condition.pt"
 retro_templates = "models/idx2template_retro.json"
-building_blocks = "models/bb_mol2idx.json"
+building_blocks = "models/bb_smaller.json"
+
+# Objectives
+objective_functions = ["economic_cost", "env_cost"]
+
+# Preparation methods
+prepare_starting_mols.file_path = %building_blocks
+prepare_heuristic_fns.heuristics = %objective_functions
 
 # Weight Selection Parameters
 MOGraph.weight_samples = 66
@@ -13,13 +21,17 @@ MOGraph.include_extreme = True
  
 # Search Parameters
 MOSearch.top_n = 50
-MOSearch.max_depth = 10
+MOSearch.max_depth = 5
 MOSearch.iteration_budget = 2000
-MOSearch.weight_iter_budget = 100
+MOSearch.weight_iter_budget = 20
 MOSearch.time_budget = 600
 MOSearch.weight_strategy = "it"
 
 # Retro model
-OneStepModel.model_type = "st"
-OneStepModel.checkpoint_path = %retro_model
-OneStepModel.template_path = %retro_templates
+retro_prediction.OneStepModel.model_type = "st"
+retro_prediction.OneStepModel.checkpoint_path = %retro_model
+retro_prediction.OneStepModel.template_path = %retro_templates
+retro_prediction.OneStepModel.cost_functions = %objective_functions
+
+# Condition model
+retro_prediction.ConditionPrediction.model_path = %condition_model
