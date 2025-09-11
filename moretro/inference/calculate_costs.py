@@ -1,6 +1,7 @@
 # this file introduces the cost functions to calculate costs of reactions
 # * All costs are scaled between 0 and 10
 
+import numpy as np
 from typing import Any
 from rdkit import Chem
 
@@ -64,9 +65,17 @@ def atom_economy_cost(prediction: dict[str, Any]) -> float:
     return (1-atom_economy)*10
             
 
+def log_score(prediction: dict[str, Any]) -> float:
+    """
+    Logarithmic cost based on the model prediction score.
+    Higher score = lower cost.
+    """
+    score = prediction["score"]
+    return -np.log(score)  # Natural log
 
 
 # Cost function mapping for easy configuration
 COST_MAPPING = {
     "env_cost": atom_economy_cost,
+    "economic_cost": log_score,
 }
