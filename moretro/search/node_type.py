@@ -32,29 +32,34 @@ class MolNode:
     heuristic_fns : list[Callable[[str], float]]
         List of heuristic functions that calculate objective values for this molecule.
     depth : int
-        Depth of the node in the search tree. Root (target) molecule has depth 0,
+        Depth of the node in the search tree. Root (target) molecule has depth 0.
     is_known : bool
         Whether this molecule is available in the building blocks (known starting materials).
     rxn_no : Vector (list[float])
         Reaction number vector containing scalar values for each weight group.
-    total_value : Vector (list[float])
+    _total_value : Vector (list[float])
         Total value vector propagated from parent nodes, one value for each weight group.
+    success : bool
+        Whether this node has at least one successful synthesis path to building blocks.
     success_cost : PathCost
         Dictionary mapping cost vectors (as tuples) to the corresponding synthesis paths.
         Key: tuple of objective costs, Value: list of nodes in the path.
-    success : bool
-        Whether this node has at least one successful synthesis path to building blocks.
-    success_cost: PathCost
-        Dictionary mapping cost vectors for successful synthesis to corresponding path + weights
-        Key: tuple of objective costs, Value: tuple of nodes in the path with weight indices
     is_open : bool
         Whether this node is available for expansion in the search.
     zero_bound : bool
         Whether to use zero lower bounds for known molecules. If True, known molecules
-    value_estimates : Vector (list[float])
-        Heuristic-based estimates for each objective (computed in __post_init__).
+        get zero cost estimates.
+    is_target : bool
+        Whether this is the target molecule.
 
+    Attributes computed in __post_init__:
+    ------------------------------------
+    h_length : int
+        Length of heuristic functions list.
+    value_estimates : Vector (list[float])
+        Heuristic-based estimates for each objective.
     success_cost_estimate : Vector (list[float])
+        Cost estimate for successful synthesis (only set for known molecules).
     """
 
     smiles: str = field(compare=True)
@@ -62,7 +67,7 @@ class MolNode:
     depth: int
     is_known: bool
     rxn_no: Vector = field(default_factory=list)
-    total_value: Vector = field(default_factory=list)
+    _total_value: Vector = field(default_factory=list)
     success: bool = False
     success_cost: PathCost = field(default_factory=dict)
     is_open: bool = True
@@ -92,7 +97,17 @@ class MolNode:
 
     def objectives_to_scalar(self, weights: np.ndarray) -> np.ndarray:
         """
-        Convert the objectives to a scalar using current weights and initialize rxn_no
+        Convert the objectives to a scalar using current weights and initialize rxn_no.
+        
+        Parameters
+        ----------
+        weights : np.ndarray
+            Weight matrix for scalarization.
+            
+        Returns
+        -------
+        np.ndarray
+            Array of scalar reaction numbers, one for each weight group.
         """
         rxn_no = []
         for weight in weights:
@@ -207,6 +222,17 @@ class MolNode:
             new_success_cost[cost] = new_path
         return new_success_cost
 
+    @property
+    def total_value(self) -> Vector:
+        return self._total_value
+    
+    @total_value.setter
+    def total_value(self, value: Vector) -> None:
+        condition_check = not self.is_target and not self.success
+        if value and sum(np.array(value) == 0) == len(value) and condition_check:  # Check if all values are zero
+            logger.warning(f"Total value of node {self.smiles} is all zeros, this is not expected.")
+        self._total_value = value
+
     def __hash__(self) -> int:
         return id(self)
 
@@ -232,6 +258,21 @@ class RxnNode:
         Multi-dimensional reaction cost.
     weight_length : int
         Number of weight samples.
+    total_value : Vector
+        Total value vector, one for each group of weights (default: empty list).
+    rxn_no : Vector
+        Reaction number vector, one for each group of weights (default: empty list).
+    success_cost : PathCost
+        Dictionary mapping cost vectors to synthesis paths (default: empty dict).
+    success : bool
+        Whether this reaction has successful synthesis paths (default: False).
+
+    Attributes computed in __post_init__:
+    ------------------------------------
+    true_cost : Vector
+        Copy of original cost before adding delta offset.
+    _delta_offset : float
+        Small offset added to costs to ensure uniqueness.
     """
 
     smiles: str
@@ -241,9 +282,6 @@ class RxnNode:
     depth: int
     cost: Vector  # Actual cost of reaction in n dimensions
     weight_length: int
-    # running_cost: list[np.ndarray] = field(
-    # default_factory=list
-    # )  # cost of all previous reactions in path
     total_value: Vector = field(default_factory=list)  # one for each group of weight
     rxn_no: Vector = field(default_factory=list)  # one for each group of weights
     success_cost: PathCost = field(default_factory=dict)
@@ -255,7 +293,7 @@ class RxnNode:
             logger.error("Reaction cost cannot be empty!")
             raise ValueError("Reaction cost must be provided")
 
-        reaction_hash = hash((self.smiles, self.template, self.reagents))
+        reaction_hash = hash((self.smiles, self.reagents))
         normalized_hash = (abs(reaction_hash) % 100) + 1
         self._delta_offset = normalized_hash * 1e-15
         self.true_cost = self.cost.copy()
@@ -323,12 +361,16 @@ class RxnNode:
         bool
             True if total_value was updated.
         """
-        new_total_value = (
-            np.array(self.rxn_no)
-            - np.array(parent.rxn_no)
-            + np.array(parent.total_value)
-        )
-        new_total_value = new_total_value.tolist()
+        # check if parent molecule is infeasible
+        if parent.rxn_no == [float('inf')] * len(self.rxn_no):
+            new_total_value = [float('inf')] * len(self.rxn_no)
+        else:
+            new_total_value = (
+                np.array(self.rxn_no)
+                - np.array(parent.rxn_no)
+                + np.array(parent.total_value)
+            )
+            new_total_value = new_total_value.tolist()
         if self.total_value != new_total_value:
             self.total_value = new_total_value
             return True
