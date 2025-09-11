@@ -126,6 +126,8 @@ class TemplRel(TemplateModel):
             target_rds.append(rdchiralReactants(prod))
 
         with torch.no_grad():
+            # Explicitly set model to eval mode to ensure no dropout
+            self.eval()
             output = self(target_fp)
 
         # Process all products with the same logic
@@ -213,7 +215,7 @@ class TemplRel(TemplateModel):
         for prec in prec_to_score:
             prec_to_score[prec] /= total_score
         final_predictions = []
-        for prec in prec_to_score:
+        for prec in sorted(prec_to_score.keys(), key=lambda x: sorted(list(x))):
             final_predictions.append(
                 {
                     "rxn_smiles": ".".join(prec) + ">>" + product,
