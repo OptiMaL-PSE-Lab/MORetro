@@ -23,27 +23,39 @@ from moretro.utils.typing_hints import (
 logger = logging.getLogger(__name__)
 
 
-@gin.configurable(denylist=["target", "building_blocks", "heuristic_fns"])  
+@gin.configurable(denylist=["target", "building_blocks", "heuristic_fns"])
 class MOGraph:
     """
     Multi-objective retrosynthesis search graph.
 
-    Parameters
+    Attributes
     ----------
     target : str
-        Target molecule in SMILES format.
+        Canonicalized target molecule SMILES.
     building_blocks : set[str]
-        Available starting materials.
-    heuristic_fns : list[Callable[[str], float]]
-        Objective functions for multi-objective optimization.
-    weight_samples : int, default 64
-        Total number of weight vectors to generate.
-    no_weights : int, default 5
-        Number of active weight vectors.
-    weight_initial : str, default "sobol"
-        Weight initialization method ("sobol" or "dirichlet")
-    include_extreme : bool, default False
-        Whether to include extreme points in the weight vectors (for sobol).
+        Set of available starting materials.
+    heuristic_fns : list[Callable[[str], float]]W
+        List of objective functions.
+    open_nodes : set[MolNode]
+        Set of nodes available for expansion.
+    weights : np.ndarray
+        Currently active weight vectors.
+    weights_open : np.ndarray
+        Pool of remaining weight vectors.
+    weight_history : list[list[float]]
+        History of previously used weight vectors.
+    solution_cost : SolutionCost
+        Dictionary mapping cost vectors to synthesis paths and weight indices.
+    pareto_front : ParetoCost
+        Current Pareto-optimal solutions.
+    mol_to_node : dict[str, MolNode]
+        Mapping from molecule SMILES to their corresponding nodes.
+    target_node : MolNode
+        The root node representing the target molecule.
+    graph : AndOrGraph
+        The underlying AND/OR graph structure.
+    rng : np.random.Generator
+        Random number generator for reproducible weight sampling.
     """
 
     def __init__(
@@ -52,14 +64,14 @@ class MOGraph:
         building_blocks: set[str],
         heuristic_fns: list[
             Callable[[str], float]
-        ],  # Objectives for the search planning
+        ],
         weight_samples: int = 64,
         no_weights: int = 5,
-        weight_initial: str = "sobol",  # Type of weight initialization
-        include_extreme: bool = False,  # Include extreme points in weight vectors
+        weight_initial: str = "sobol",
+        include_extreme: bool = False,
     ):
         self.target = Chem.CanonSmiles(target)
-        self.building_blocks = [Chem.CanonSmiles(mol) for mol in building_blocks]
+        self.building_blocks = building_blocks
         self.heuristic_fns = heuristic_fns
         self.open_nodes: set[MolNode] = set()
         self.weight_samples = weight_samples
@@ -71,6 +83,10 @@ class MOGraph:
         self.solution_cost: SolutionCost = {}
         self.pareto_front: ParetoCost = {}
         self.mol_to_node: dict[str, MolNode] = {}
+
+        # Create a dedicated random number generator for reproducibility
+        self.rng = np.random.default_rng(seed=42)
+
         target_known = self.target in self.building_blocks
         if target_known:
             logging.info(f"Target {self.target} is already in the building blocks.")
@@ -86,17 +102,18 @@ class MOGraph:
 
         self.graph = AndOrGraph()
         if self.target_node.is_open:
-            self.graph.add_node(self.target, node_type="target")
+            self.graph.add_node(self.target_node, node_type="target")
             # add open target node no_weights time to set in list
             self.open_nodes.add(self.target_node)
             self.mol_to_node[self.target] = self.target_node
+            self.target_node.total_value = [0.0] * self.no_weights
 
         self.weights_open = self.weight_initialization(
             n_obj=len(heuristic_fns),
             init_type=weight_initial,
-            include_extreme=include_extreme,  # or "dirichlet"
+            include_extreme=include_extreme,  
         )
-        np.random.shuffle(self.weights_open)
+        self.rng.shuffle(self.weights_open)
         # pop no_weights from weights_open into self.weights
         self.weights = self.weights_open[
             : self.no_weights, :
@@ -125,7 +142,19 @@ class MOGraph:
             Set of new nodes and their weight indices.
         """
         new_nodes = []
-        for node, weight_indices in expanded_nodes:
+        list_expanded_nodes = sorted(expanded_nodes, key=lambda x: x[0].smiles)
+        # check for reactants that appear more than once but are not in the current mol_to_node
+        reactants = []
+        for node, _ in list_expanded_nodes:
+            for pred in predictions[node]:
+                react = pred["reactants"]
+                react = [Chem.CanonSmiles(r) for r in react]
+                reactants.extend(react)
+        multiple_reactants = {
+            r for r in reactants if reactants.count(r) > 1 and r not in self.mol_to_node
+        }
+
+        for node, weight_indices in list_expanded_nodes:
             self.open_nodes.remove(node)
             node.is_open = False
             for pred in predictions[node]:
@@ -149,7 +178,6 @@ class MOGraph:
                     cost=costs,
                     weight_length=len(self.weights),
                 )
-
                 # Check for presence of cycles in the graph
                 cycle_exists = False
                 for reactant in reactants:
@@ -169,6 +197,9 @@ class MOGraph:
                 for reactant in reactants:
                     if reactant in self.mol_to_node:
                         reactant_node = self.mol_to_node[reactant]
+                        reactant_node.depth = max(reactant_node.depth, node.depth + 2)
+                        if reactant in multiple_reactants:
+                            new_nodes.append((reactant_node, weight_indices))
                     else:
                         reactant_known = reactant in self.building_blocks
                         reactant_node = MolNode(
@@ -183,7 +214,6 @@ class MOGraph:
                     self.graph.add_edge(rxn_node, reactant_node)
 
                 new_nodes.append((rxn_node, weight_indices))
-
         return set(new_nodes)
 
     def update_values(self, nodes: MolsAndWeights) -> bool:
@@ -203,7 +233,7 @@ class MOGraph:
         nodes_to_update = nodes.copy()
         updated_nodes, new_solutions = self.uppropagation(nodes_to_update)
         nodes_to_update.update(updated_nodes)
-        self.downpropagation(nodes_to_update)
+        downprop_updated, _ = self.downpropagation(nodes_to_update)
         pareto_updated = self.update_solution_and_pareto(new_solutions)
 
         return pareto_updated
@@ -221,9 +251,11 @@ class MOGraph:
             Starting nodes and their weight indices.
 
         Returns
-        -------+
-        MolsAndWeights
-            Set of updated nodes and weight indices.
+        -------
+        tuple[MolsAndWeights, NewSolution]
+            Tuple containing:
+            - MolsAndWeights: Set of updated nodes and weight indices
+            - NewSolution: Dictionary mapping cost vectors to weight indices for new solutions
         """
         updated_nodes: MolsAndWeights = set()
         new_solutions: dict[CostVector, WeightIndices] = {}
@@ -235,21 +267,28 @@ class MOGraph:
                 weight_groups[weight_indices] = []
             weight_groups[weight_indices].append(node)
 
-        # Process each weight group separately
-        #! when nodes want to expand nodes in the same synthesis path, these nodes must be in the same weight group
+        # sort dict so smallest weight_indices are processed first
+        weight_groups = dict(sorted(weight_groups.items(), key=lambda item: item[0]))
         for weight_indices, nodes in weight_groups.items():
             old_solutions = self.target_node.success_cost.keys()
             old_solutions = set(old_solutions)
-            # Use priority queue for depth ordering within each weight group
+
+            copy_weight_groups = weight_groups.copy()
+            # * Do not accidentally uppropagate into rxns that are chosen by other weight groups
+            copy_weight_groups.pop(weight_indices)
+            # Get all reaction nodes from other weight groups
+            rxn_nodes = set()
+            for other_nodes in copy_weight_groups.values():
+                rxn_nodes.update(
+                    node for node in other_nodes if isinstance(node, RxnNode)
+                )
+            # Sort nodes by depth (deepest first) and then by SMILES length within each depth level
             queue = [(-node.depth, id(node), node) for node in nodes]
             heapq.heapify(queue)
             processed = set()
 
             while queue:
                 _, node_id, node = heapq.heappop(queue)
-
-                if node_id in processed:
-                    continue
                 processed.add(node_id)
 
                 if isinstance(node, RxnNode):
@@ -267,9 +306,8 @@ class MOGraph:
                     updated_nodes.add((node, weight_indices))
                     for parent in list(self.graph.predecessors(node)):
                         parent = cast(RxnNode | MolNode, parent)
-                        parent_id = id(parent)
-                        if parent_id not in processed:
-                            heapq.heappush(queue, (-parent.depth, parent_id, parent))
+                        if parent not in queue and parent not in rxn_nodes:
+                            heapq.heappush(queue, (-parent.depth, id(parent), parent))
 
             current_solution = self.target_node.success_cost.keys()
             current_solution = set(current_solution)
@@ -279,7 +317,7 @@ class MOGraph:
 
         return (updated_nodes, new_solutions)
 
-    def downpropagation(self, nodes: MolsAndWeights) -> set[Nodes]:
+    def downpropagation(self, nodes: MolsAndWeights) -> tuple[set[Nodes], set[Nodes]]:
         """
         Propagate values downward from root to leaves.
 
@@ -290,8 +328,8 @@ class MOGraph:
 
         Returns
         -------
-        set[Nodes]
-            Set of updated nodes.
+        tuple[set[Nodes], set[Nodes]]
+            Tuple of (updated_nodes, processed_nodes).
         """
         # Use priority queue to maintain depth order (positive depth for min-heap behavior)
         queue = [(node[0].depth, id(node[0]), node[0]) for node in nodes]
@@ -300,12 +338,8 @@ class MOGraph:
         processed = set()  # Track processed nodes to avoid duplicates
 
         while queue:
-            _, node_id, node = heapq.heappop(queue)
-
-            # Skip if already processed
-            if node_id in processed:
-                continue
-            processed.add(node_id)
+            _, _ , node = heapq.heappop(queue)
+            processed.add(node)
 
             if isinstance(node, RxnNode):
                 parents = cast(list[MolNode], list(self.graph.predecessors(node)))
@@ -321,11 +355,10 @@ class MOGraph:
             if children_update:
                 updated_nodes.add(node)
                 for child in self.graph.successors(node):
-                    child_id = id(child)
-                    if child_id not in processed:
-                        heapq.heappush(queue, (child.depth, child_id, child))
+                    if child not in queue:
+                        heapq.heappush(queue, (child.depth, id(child), child))
 
-        return updated_nodes
+        return updated_nodes, processed
 
     def update_solution_and_pareto(self, new_solutions: NewSolution) -> bool:
         """
@@ -431,10 +464,13 @@ class MOGraph:
             updated_nodes: MolsAndWeights = set(open_nodes_with_weights)
             new_nodes, _ = self.uppropagation(updated_nodes)
             updated_nodes.update(new_nodes)
-            downprop_result = self.downpropagation(
-                updated_nodes
-            )  # all nodes in the graph should be updated, hence assert this
-            assert len(downprop_result) == len(self.graph.nodes)
+            downprop_updated, downprop_processed = self.downpropagation(updated_nodes)
+            # Get all nodes in the graph for comparison
+            all_graph_nodes = set(self.graph.nodes)
+            logger.info("Reinitialization of weights completed")
+            logger.info(f"Total nodes in graph: {len(all_graph_nodes)}")
+            logger.info(f"Nodes processed during downprop: {len(downprop_processed)}")
+            logger.info(f"Nodes updated during downprop: {len(downprop_updated)}")
 
     def update_weights(self):
         """
@@ -449,27 +485,28 @@ class MOGraph:
         self, n_obj: int, init_type: str, include_extreme: bool
     ) -> np.ndarray:
         """
-        Initialize set of weights for linear combination of objectives using
+        Initialize set of weights for linear combination of objectives.
 
-        Parameters:
-        -----------
+        Parameters
+        ----------
         n_obj : int
-            Number of objectives
+            Number of objectives.
         init_type : str
             Type of weight initialization to use. Options are "sobol" or "dirichlet".
         include_extreme : bool
             Whether to include extreme points in the weight vectors.
 
-        Returns:
-        --------
-        np.ndarrays
+        Returns
+        -------
+        np.ndarray
+            Array of weight vectors with shape (weight_samples, n_obj).
         """
         if init_type == "sobol":
             return self._sobol_initialization(
                 n_obj, self.weight_samples, include_extreme
             )
         elif init_type == "dirichlet":
-            return np.random.dirichlet(np.ones(n_obj), size=self.weight_samples)
+            return self.rng.dirichlet(np.ones(n_obj), size=self.weight_samples)
         else:
             raise ValueError(f"Unknown weight initialization type: {init_type}")
 
@@ -510,7 +547,7 @@ class MOGraph:
             )
             raise ValueError("Please re-adjust the number of samples")
 
-        sobol = qmc.Sobol(d=n_obj, scramble=True)
+        sobol = qmc.Sobol(d=n_obj, scramble=False, rng=self.rng)
         m = int(np.log2(sobol_samples_needed))
         raw_samples = sobol.random_base2(m=m)
 
