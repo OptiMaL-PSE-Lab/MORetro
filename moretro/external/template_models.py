@@ -80,7 +80,6 @@ class TemplRel(TemplateModel):
 
         self.args = args
         self.layers = self._build_layers(args)
-        print(self.layers)
         self.output_layer = nn.Linear(
             self.hidden_sizes[-1], args.n_templates, bias=True
         )
