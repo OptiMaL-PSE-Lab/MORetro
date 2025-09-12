@@ -1,13 +1,13 @@
-import gin
 import json
-import torch
 from logging import Logger
-from typing import Optional
+from pathlib import Path
+
+import gin
+import torch
 
 from moretro.external.template_models import TemplRel
-from moretro.inference.calculate_costs import calculate_costs, COST_MAPPING
+from moretro.inference.calculate_costs import COST_MAPPING, calculate_costs
 from moretro.utils.typing_hints import Predictions
-from pathlib import Path
 
 logger = Logger(__name__)
 file_path = Path(__file__).parent
@@ -25,12 +25,12 @@ class OneStepModel:
         model_type: str,
         checkpoint_path: str,
         cost_functions: list[str],
-        template_path: Optional[str] = None,
+        template_path: str | None = None,
     ):
         self.model_type = model_type
         self.checkpoint_path = file_path.parent / checkpoint_path
         self.template_path = file_path.parent / template_path if template_path else None
-        self.condition_model = ConditionPrediction(gin.REQUIRED) # type: ignore
+        self.condition_model = ConditionPrediction(gin.REQUIRED)  # type: ignore
         logger.info(f"Loading Single-Step Model from {self.checkpoint_path}")
 
         self.cost_functions = []
@@ -39,10 +39,10 @@ class OneStepModel:
                 self.cost_functions.append(COST_MAPPING[cost_name])
             else:
                 logger.error(f"Unknown cost function: {cost_name}")
-                raise ValueError(f"Please ensure that all cost functions are defined")
+                raise ValueError("Please ensure that all cost functions are defined")
 
         if self.template_path:
-            with open(self.template_path, "r") as f:
+            with open(self.template_path, encoding="utf-8") as f:
                 template_dict = json.load(f)
             self.templates = {}
             for k, v in template_dict.items():
@@ -98,7 +98,8 @@ class OneStepModel:
                 pred["temperature"] = temp
                 pred["reagents"] = reagents
         return predictions
-    
+
+
 @gin.configurable()
 class ConditionPrediction:
     """

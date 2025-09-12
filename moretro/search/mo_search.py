@@ -1,14 +1,15 @@
 import logging
 import time
+from collections import defaultdict
+from collections.abc import Callable
+
 import gin
 import numpy as np
 import torch  # type: ignore
-from typing import Callable
-from collections import defaultdict
 
 from moretro.inference.retro_prediction import OneStepModel
 from moretro.search.mo_graph import MOGraph
-from moretro.search.node_type import RxnNode, MolNode
+from moretro.search.node_type import MolNode
 from moretro.utils.typing_hints import MolNodeAndWeights, Nodes
 
 # NOTE: For now, no dominance checks are implemented due to interdependent nature of problem
@@ -124,7 +125,7 @@ class MOSearch:
                     if self.weights_open[w]:
                         self.weights_open[w] = False
                         logger.info(
-                            f"Node {node.smiles} cannot be expanded with depth {int(node.depth/2)} (max depth {int(self.max_depth/2)})"
+                            f"Node {node.smiles} cannot be expanded with depth {int(node.depth / 2)} (max depth {int(self.max_depth / 2)})"
                         )
                         logger.warning(
                             f"Weight {w} is now blocked from expansion until resampling."
@@ -145,7 +146,9 @@ class MOSearch:
         predictions = self.retro_model.predict(
             smiles, self.top_n
         )  # * adds predictions with costs
-        predictions = {node: preds for node, preds in zip(nodes, predictions)}
+        predictions = {
+            node: preds for node, preds in zip(nodes, predictions, strict=True)
+        }
         new_nodes_and_weights = self.search_graph.expand_graph(
             predictions, nodes_and_weights
         )

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-import numpy as np
-from itertools import product
-from typing import Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import product
+
+import numpy as np
 from rdkit import Chem
 
 type Vector = list[float]
@@ -98,12 +99,12 @@ class MolNode:
     def objectives_to_scalar(self, weights: np.ndarray) -> np.ndarray:
         """
         Convert the objectives to a scalar using current weights and initialize rxn_no.
-        
+
         Parameters
         ----------
         weights : np.ndarray
             Weight matrix for scalarization.
-            
+
         Returns
         -------
         np.ndarray
@@ -142,18 +143,16 @@ class MolNode:
             new_success_cost: PathCost = {tuple(self.success_cost_estimate): [self]}
         elif self.is_open:  # tip node of tree which is not a building block
             new_rxn_no = self.objectives_to_scalar(weights)
-        else:
-            if len(children) > 0:  # interior node with children
-                children_rxn_no = np.array(
-                    [child.rxn_no for child in children]
-                )  # shape: (n_children, n_objectives)
-                new_rxn_no = np.min(children_rxn_no, axis=0)
-                success = any(child.success for child in children)
-                if success:
-                    new_success_cost = self.track_success_cost(children)
-
-            else:  # no valid expansion
-                new_rxn_no = np.full(weights.shape[0], np.inf)
+        elif len(children) > 0:  # interior node with children
+            children_rxn_no = np.array(
+                [child.rxn_no for child in children]
+            )  # shape: (n_children, n_objectives)
+            new_rxn_no = np.min(children_rxn_no, axis=0)
+            success = any(child.success for child in children)
+            if success:
+                new_success_cost = self.track_success_cost(children)
+        else:  # no valid expansion
+            new_rxn_no = np.full(weights.shape[0], np.inf)
 
         new_rxn_no = new_rxn_no.tolist()  # convert to list for comparison
         if (
@@ -225,12 +224,16 @@ class MolNode:
     @property
     def total_value(self) -> Vector:
         return self._total_value
-    
+
     @total_value.setter
     def total_value(self, value: Vector) -> None:
         condition_check = not self.is_target and not self.success
-        if value and sum(np.array(value) == 0) == len(value) and condition_check:  # Check if all values are zero
-            logger.warning(f"Total value of node {self.smiles} is all zeros, this is not expected.")
+        if (
+            value and sum(np.array(value) == 0) == len(value) and condition_check
+        ):  # Check if all values are zero
+            logger.warning(
+                f"Total value of node {self.smiles} is all zeros, this is not expected."
+            )
         self._total_value = value
 
     def __hash__(self) -> int:
@@ -362,8 +365,8 @@ class RxnNode:
             True if total_value was updated.
         """
         # check if parent molecule is infeasible
-        if parent.rxn_no == [float('inf')] * len(self.rxn_no):
-            new_total_value = [float('inf')] * len(self.rxn_no)
+        if parent.rxn_no == [float("inf")] * len(self.rxn_no):
+            new_total_value = [float("inf")] * len(self.rxn_no)
         else:
             new_total_value = (
                 np.array(self.rxn_no)

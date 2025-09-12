@@ -132,7 +132,7 @@ class TemplRel(TemplateModel):
         # Process all products with the same logic
         all_predictions = []
         probs = torch.softmax(output, dim=1 if len(products) > 1 else 0)
-        
+
         # Handle dimension for single vs multiple products
         if single_input:
             probs = probs.unsqueeze(0)  # Add batch dimension for consistency

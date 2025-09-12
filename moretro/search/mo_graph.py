@@ -1,22 +1,24 @@
-import gin
 import heapq
 import logging
+from collections.abc import Callable
+from typing import cast
+
+import gin
 import numpy as np
 from rdkit import Chem
-from typing import Callable, cast
 from scipy.stats import qmc
 
-from moretro.search.node_type import MolNode, RxnNode
 from moretro.inference.and_or_graph import AndOrGraph
+from moretro.search.node_type import MolNode, RxnNode
 from moretro.utils.typing_hints import (
-    Nodes,
-    SolutionCost,
-    ParetoCost,
-    MolsAndWeights,
-    MolNodeAndWeights,
     CostVector,
-    WeightIndices,
+    MolNodeAndWeights,
+    MolsAndWeights,
     NewSolution,
+    Nodes,
+    ParetoCost,
+    SolutionCost,
+    WeightIndices,
 )
 
 # Set up module logger
@@ -62,9 +64,7 @@ class MOGraph:
         self,
         target: str,
         building_blocks: set[str],
-        heuristic_fns: list[
-            Callable[[str], float]
-        ],
+        heuristic_fns: list[Callable[[str], float]],
         weight_samples: int = 64,
         no_weights: int = 5,
         weight_initial: str = "sobol",
@@ -111,7 +111,7 @@ class MOGraph:
         self.weights_open = self.weight_initialization(
             n_obj=len(heuristic_fns),
             init_type=weight_initial,
-            include_extreme=include_extreme,  
+            include_extreme=include_extreme,
         )
         self.rng.shuffle(self.weights_open)
         # pop no_weights from weights_open into self.weights
@@ -338,7 +338,7 @@ class MOGraph:
         processed = set()  # Track processed nodes to avoid duplicates
 
         while queue:
-            _, _ , node = heapq.heappop(queue)
+            _, _, node = heapq.heappop(queue)
             processed.add(node)
 
             if isinstance(node, RxnNode):
@@ -418,16 +418,16 @@ class MOGraph:
 
         for pareto_cost in list(self.pareto_front.keys()):
             # Check if new solution is dominated by existing Pareto point
-            if all(p <= c for p, c in zip(pareto_cost, cost_vector)) and any(
-                p < c for p, c in zip(pareto_cost, cost_vector)
-            ):
+            if all(
+                p <= c for p, c in zip(pareto_cost, cost_vector, strict=True)
+            ) and any(p < c for p, c in zip(pareto_cost, cost_vector, strict=True)):
                 should_add_to_pareto = False
                 break
 
             # Check if existing Pareto point is dominated by new solution
-            elif all(c <= p for c, p in zip(cost_vector, pareto_cost)) and any(
-                c < p for c, p in zip(cost_vector, pareto_cost)
-            ):
+            elif all(
+                c <= p for c, p in zip(cost_vector, pareto_cost, strict=True)
+            ) and any(c < p for c, p in zip(cost_vector, pareto_cost, strict=True)):
                 points_to_remove.append(pareto_cost)
 
         # Remove dominated points

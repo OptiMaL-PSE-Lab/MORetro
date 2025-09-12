@@ -1,62 +1,51 @@
-import graphviz
-import gin
+import logging
 import logging.config as conf
 import tempfile
 from pathlib import Path as PathLib
-import numpy as np
+from typing import Any
+
+import gin
+import graphviz
 import matplotlib.pyplot as plt
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import Draw
-from typing import Any
-import torch
-import random
-import os
-
-# Set seeds for reproducibility
-np.random.seed(42)
-random.seed(42)
-torch.manual_seed(42)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(42)
-    torch.cuda.manual_seed_all(42)
-# Make PyTorch deterministic
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-# Set Python hash seed for deterministic hashing
-os.environ['PYTHONHASHSEED'] = '0'
 
 from moretro.inference.retro_prediction import OneStepModel
 from moretro.search.mo_search import MOSearch
 from moretro.search.node_type import MolNode, RxnNode
-from moretro.utils.prepare_models import *
+from moretro.utils.prepare_models import (
+    prepare_heuristic_fns,
+    prepare_starting_mols,
+)
 from moretro.utils.typing_hints import Path
 
 # set up logging in this main file
-conf.fileConfig('moretro/configs/logging.conf')
+conf.fileConfig("moretro/configs/logging.conf")
 logger = logging.getLogger(__name__)
 
+
 class MORetro:
-    def __init__(
-        self,
-        target: str
-    ):
-        retro_model = OneStepModel(gin.REQUIRED) # type: ignore
-        building_blocks = prepare_starting_mols(gin.REQUIRED) # type: ignore
-        heuristic_fns = prepare_heuristic_fns(gin.REQUIRED) # type: ignore
-        self.mo_search = MOSearch(target, retro_model, building_blocks, heuristic_fns, gin.REQUIRED) # type: ignore 
+    def __init__(self, target: str):
+        retro_model = OneStepModel(gin.REQUIRED)  # type: ignore
+        building_blocks = prepare_starting_mols(gin.REQUIRED)  # type: ignore
+        heuristic_fns = prepare_heuristic_fns(gin.REQUIRED)  # type: ignore
+        self.mo_search = MOSearch(
+            target, retro_model, building_blocks, heuristic_fns, gin.REQUIRED
+        )  # type: ignore
         self.target = target
 
     def search(self):
         """
-        Run the multi-objective retrosynthesis search and plot results 
+        Run the multi-objective retrosynthesis search and plot results
         """
         # try:
         self.mo_search.run_mo_search()
         logger.info("Search completed.")
         # except KeyboardInterrupt:
-            # logger.warning("Search interrupted by user.")
+        # logger.warning("Search interrupted by user.")
         # finally:
-            # TODO improve this
+        # TODO improve this
         logger.info("Creating plots for target and saving in ./figs directory")
         self.visualize_all_solutions()
         self.plot_pareto_front()
@@ -154,16 +143,12 @@ class MORetro:
         for i, (cost_vector, _) in enumerate(pareto_front.items()):
             if cost_vector in solution_cost:
                 path, _ = solution_cost[cost_vector]
-                title = (
-                    f"Pareto Solution {i+1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
-                )
-                output_path = str(PathLib(output_dir) / f"pareto_route_{i+1}")
+                title = f"Pareto Solution {i + 1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
+                output_path = str(PathLib(output_dir) / f"pareto_route_{i + 1}")
                 self._visualize_path(path, output_path, title)
-                print(f"Saved Pareto route {i+1} to {output_path}.png")
+                print(f"Saved Pareto route {i + 1} to {output_path}.png")
 
-    def visualize_dominated_solutions(
-        self, output_dir: str, max_solutions: int = 10
-    ):
+    def visualize_dominated_solutions(self, output_dir: str, max_solutions: int = 10):
         """
         Visualize dominated (non-Pareto) synthesis routes using direct path visualization.
 
@@ -191,12 +176,10 @@ class MORetro:
         dominated_solutions = dominated_solutions[:max_solutions]
 
         for i, (cost_vector, path, _) in enumerate(dominated_solutions):
-            title = (
-                f"Dominated Solution {i+1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
-            )
-            output_path = str(PathLib(output_dir) / f"dominated_route_{i+1}")
+            title = f"Dominated Solution {i + 1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
+            output_path = str(PathLib(output_dir) / f"dominated_route_{i + 1}")
             self._visualize_path(path, output_path, title)
-            print(f"Saved dominated route {i+1} to {output_path}.png")
+            print(f"Saved dominated route {i + 1} to {output_path}.png")
 
     def visualize_all_solutions(self, output_dir: str = "figs"):
         """
@@ -342,7 +325,7 @@ class MORetro:
 
         # Add weight labels if requested
         if show_weights:
-            for _, (cost, weight_list) in zip(costs_array, weights):
+            for _, (cost, weight_list) in zip(costs_array, weights, strict=True):
                 # Format weight vector(s) for display
                 if len(weight_list) == 1:
                     weight_str = f"[{', '.join([f'{w:.2f}' for w in weight_list[0]])}]"
@@ -367,7 +350,13 @@ class MORetro:
         # Connect points to show Pareto front
         sorted_indices = np.argsort(costs_array[:, 0])
         sorted_costs = costs_array[sorted_indices]
-        plt.plot(sorted_costs[:, 0], sorted_costs[:, 1], "r--", alpha=0.5, linewidth=1)
+        plt.plot(
+            sorted_costs[:, 0],
+            sorted_costs[:, 1],
+            "r--",
+            alpha=0.5,
+            linewidth=1,
+        )
 
         plt.tight_layout()
         plt.savefig(f"{output_path}.png", dpi=300, bbox_inches="tight")
@@ -389,11 +378,20 @@ class MORetro:
         ax = fig.add_subplot(111, projection="3d")
 
         # Plot Pareto points
-        ax.scatter(costs_array[:, 0], costs_array[:, 1], costs_array[:, 2], c="red", s=100, alpha=0.7, edgecolors="black", label="Pareto Solutions")  # type: ignore
+        ax.scatter(
+            costs_array[:, 0],
+            costs_array[:, 1],
+            costs_array[:, 2],
+            c="red",
+            s=100,  # type: ignore
+            alpha=0.7,
+            edgecolors="black",
+            label="Pareto Solutions",
+        )
 
         # Add weight labels if requested
         if show_weights:
-            for cost, weight_list in zip(costs_array, weights):
+            for cost, weight_list in zip(costs_array, weights, strict=True):
                 # Format weight vector(s) for display
                 if len(weight_list) == 1:
                     weight_str = f"[{', '.join([f'{w:.2f}' for w in weight_list[0]])}]"
@@ -417,6 +415,7 @@ class MORetro:
         plt.savefig(f"{output_path}.pdf", bbox_inches="tight")
         print(f"3D Pareto front plot saved to {output_path}.png and {output_path}.pdf")
         plt.close()
+
 
 if __name__ == "__main__":
     gin.parse_config_file("moretro/configs/search_config.gin")

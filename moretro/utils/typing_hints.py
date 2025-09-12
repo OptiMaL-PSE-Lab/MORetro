@@ -1,5 +1,7 @@
+from collections.abc import Callable
+from typing import Any, TypeVar
+
 from moretro.search.node_type import MolNode, RxnNode
-from typing import TypeVar, Callable,  Any
 
 # type var
 NodeType = TypeVar("NodeType", bound=MolNode | RxnNode)

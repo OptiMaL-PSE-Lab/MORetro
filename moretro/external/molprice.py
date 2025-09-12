@@ -37,9 +37,7 @@ class MolPrice:
             radius=self.FP_rad, fpSize=self.FP_len, countSimulation=False
         )
         # Initialize feature extractor
-        self.feature_gen = MolFeatureExtractor(
-            weights_path.parent 
-        )
+        self.feature_gen = MolFeatureExtractor(weights_path.parent)
 
         if weights_path:
             self.restore(weights_path)
@@ -150,7 +148,9 @@ class MolPrice:
 
         return output, intermediate
 
-    def predict(self, smi, return_intermediate=False) -> float | tuple[float, np.ndarray]:
+    def predict(
+        self, smi, return_intermediate=False
+    ) -> float | tuple[float, np.ndarray]:
         """
         Get prediction directly from SMILES string.
 
@@ -181,13 +181,14 @@ class MolPrice:
             return output, intermediate
         return output[0]
 
+
 class MolFeatureExtractor:
     def __init__(self, scaler_path: Path):
         self.scaler_path = scaler_path
 
     def encode(self, smi: str) -> np.ndarray:
-            feat = MolFeatureExtractor._calculate_2D_feat(smi)  # type: ignore
-            return np.expand_dims(feat, axis=0)
+        feat = MolFeatureExtractor._calculate_2D_feat(smi)  # type: ignore
+        return np.expand_dims(feat, axis=0)
 
     @staticmethod
     def _calculate_2D_feat(smi):
