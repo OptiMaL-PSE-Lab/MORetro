@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main, dev ]
+  push:
+    branches: [ main, dev ]
+
+jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [ "3.12" ]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+        key: ubuntu-latest-pip-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ubuntu-latest-pip-
+
+    - name: Install system dependencies (Ubuntu)
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libxrender1 libxtst6 libxi6
+
+    - name: Install Python dependencies (CPU PyTorch)
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[dev]"
+
+    - name: Run tests with pytest
+      run: |
+        pytest tests/ -v --tb=short
+
+  test-multi-os:
+    runs-on: ${{ matrix.os }}
+    # Only run multi-OS testing on PRs to main
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+        python-version: [ "3.12" ]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/pip
+          ~/Library/Caches/pip
+          ~\AppData\Local\pip\Cache
+        key: ${{ matrix.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+        restore-keys: |
+          ${{ matrix.os }}-pip-
+
+    - name: Install Python dependencies (CPU PyTorch)
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[dev]"
+
+    - name: Run tests with pytest
+      run: |
+        pytest tests/ -v --tb=short
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.12"
+
+    - name: Install linting dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
+        pip install -e ".[lint]"
+
+    - name: Run Ruff (lint only, no auto-fix)
+      run: |
+        ruff check moretro/ --output-format=github
+        ruff format moretro/ --check --diff
+
+    - name: Run type checking with mypy
+      run: |
+        mypy moretro/ 
+      continue-on-error: true
+

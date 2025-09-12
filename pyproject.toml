@@ -1,0 +1,119 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moretro"
+version = "0.1.0"
+authors = [
+    {name = "Friedrich Hastedt"},
+]
+description = "Multi-Objective Synthesis Planning"
+readme = "README.md"
+requires-python = ">=3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "torch>=1.11.0",
+    "rdkit>=2022.9.1",
+    "numpy>=1.21.0",
+    "pandas>=1.3.0",
+    "scikit-learn>=1.0.0",
+    "gin-config>=0.5.0",
+    "matplotlib>=3.5.0",
+    "rdchiral>=1.1.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.60.0",
+    "requests>=2.25.0",
+    "networkx>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["torchvision", "pytest", "ruff", "mypy"]
+lint = ["ruff", "mypy"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["moretro*"]
+
+[tool.ruff]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "__pycache__",
+    "moretro/external",
+]
+
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "C90", "PL"
+]
+fixable = ["E", "F", "W", "I", "UP"]
+ignore = [
+    "E501", "E203", "PLR0913", "PLR0915", "PLR0917",
+    "PLR0914", "PLR6301", "PLR2004", "N806"
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+max-args = 8
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.isort]
+known-first-party = ["moretro"]
+split-on-trailing-comma = true
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = false
+disallow_untyped_defs = false
+no_strict_optional = true
+exclude = [
+    "moretro/external/",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--ignore=tests/test_one_step_model.py",
+]
