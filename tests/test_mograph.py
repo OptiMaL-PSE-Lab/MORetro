@@ -192,6 +192,44 @@ class TestWeightMethods:
         # Check that new weights were loaded
         assert not np.array_equal(graph_with_weights.weights, initial_weights)
 
+    def test_reinitialize_graph(self, graph_with_weights):
+        """Test reinitialize_graph method"""
+
+        # Add some nodes to the graph to make reinitialization meaningful
+        def h1(smiles):
+            return 1.0
+
+        def h2(smiles):
+            return 2.0
+
+        # Create a known molecule
+        known_mol = MolNode(smiles="CC", heuristic_fns=[h1, h2], depth=1, is_known=True)
+        graph_with_weights.mol_to_node["CC"] = known_mol
+        graph_with_weights.graph.add_node(known_mol, node_type="molecule")
+
+        # Create an open molecule
+        open_mol = MolNode(
+            smiles="CCO", heuristic_fns=[h1, h2], depth=1, is_known=False, is_open=True
+        )
+        graph_with_weights.mol_to_node["CCO"] = open_mol
+        graph_with_weights.graph.add_node(open_mol, node_type="molecule")
+        graph_with_weights.open_nodes.add(open_mol)
+
+        # Store initial state
+        initial_weights = graph_with_weights.weights.copy()
+        initial_history_len = len(graph_with_weights.weight_history)
+
+        # Run reinitialization
+        graph_with_weights.reinitialize_graph()
+
+        # Verify weights were updated
+        assert len(graph_with_weights.weight_history) == initial_history_len + 4
+        assert not np.array_equal(graph_with_weights.weights, initial_weights)
+
+        # Verify nodes have been processed (should have non-zero rxn_no values)
+        assert len(known_mol.rxn_no) > 0
+        assert len(open_mol.rxn_no) > 0
+
 
 class TestGraphExpansion:
     """Test graph expansion functionality"""
@@ -385,15 +423,60 @@ class TestValuePropagation:
         assert isinstance(new_solutions, dict)
 
     def test_uppropagation_multiple_weight_groups(self, graph_with_structure):
-        """Test uppropagation with multiple weight groups"""
+        """Test uppropagation with multiple weight groups from unrelated branches"""
         graph, rxn_node, reactant1, reactant2 = graph_with_structure
 
-        nodes_and_weights = {(reactant1, (0, 1)), (reactant2, (0, 1)), (rxn_node, (0,))}
+        def h1(smiles):
+            return 1.0
+
+        def h2(smiles):
+            return 1.5
+
+        # Create an independent molecule node (not connected to the existing structure)
+        independent_mol = MolNode(
+            smiles="CCN", heuristic_fns=[h1, h2], depth=0, is_known=False, is_open=True
+        )
+
+        # Add it to the graph as an independent node
+        graph.graph.add_node(independent_mol, node_type="molecule")
+        graph.mol_to_node["CCN"] = independent_mol
+        graph.open_nodes.add(independent_mol)
+
+        nodes_and_weights = {
+            (reactant1, (0,)),  # Group 0 expanding original branch
+            (reactant2, (0,)),  # Group 0 expanding original branch
+            (independent_mol, (1,)),  # Group 1 expanding independent branch
+        }
 
         updated_nodes, new_solutions = graph.uppropagation(nodes_and_weights)
 
-        # Should handle multiple weight groups
-        assert len(updated_nodes) >= 0
+        # Verify multiple weight groups are processed separately
+        weight_groups_in_result = set()
+        for node, weight_idx in updated_nodes:
+            weight_groups_in_result.add(weight_idx)
+
+        # Should process both weight groups independently
+        assert isinstance(updated_nodes, set)
+        assert isinstance(new_solutions, dict)
+
+        # Extract nodes by weight group
+        group_0_nodes = [
+            node for node, weight_idx in updated_nodes if weight_idx == (0,)
+        ]
+        group_1_nodes = [
+            node for node, weight_idx in updated_nodes if weight_idx == (1,)
+        ]
+
+        if group_0_nodes:
+            # Group 0 nodes should include nodes from the original reaction path
+            group_0_smiles = [node.smiles for node in group_0_nodes]
+            # Should contain reactants or nodes higher in the tree
+            assert any(smiles in ["CC", "CO", "CCCO"] for smiles in group_0_smiles)
+
+        if group_1_nodes:
+            # Group 1 should only contain the independent molecule
+            group_1_smiles = [node.smiles for node in group_1_nodes]
+            assert all(smiles == "CCN" for smiles in group_1_smiles)
 
     def test_uppropagation_invalid_node_type(self, graph_with_structure):
         """Test uppropagation with invalid node type"""
@@ -414,7 +497,7 @@ class TestValuePropagation:
 
         nodes_and_weights = {(graph.target_node, (0,)), (rxn_node, (0,))}
 
-        updated_nodes = graph.downpropagation(nodes_and_weights)
+        updated_nodes, _ = graph.downpropagation(nodes_and_weights)
 
         assert isinstance(updated_nodes, set)
 
@@ -559,13 +642,18 @@ class TestIntegrationScenarios:
         # Update values after first iteration
         if new_nodes_iter1:
             pareto_updated_iter1 = graph.update_values(new_nodes_iter1)
+            [
+                graph.open_nodes.add(node[0])
+                for node in new_nodes_iter1
+                if isinstance(node[0], MolNode) and not node[0].is_known
+            ]
             assert isinstance(pareto_updated_iter1, bool)
 
+        open_unknown_nodes = [node for node in graph.open_nodes]
         # Second iteration - expand newly created unknown molecules
         # Find open nodes from first iteration (CCCO and CCC should be unknown)
-        open_unknown_nodes = [node for node in graph.open_nodes if not node.is_known]
         assert (
-            len(open_unknown_nodes) >= 1
+            len(open_unknown_nodes) >= 2
         )  # Should have at least one open unknown node
 
         # Pick first two open nodes for second iteration
