@@ -21,7 +21,30 @@ logger = logging.getLogger(__name__)
 )
 class MOSearch:
     """
-    Class for guiding the search process
+    Multi-objective search engine for retrosynthesis planning.
+
+    Parameters
+    ----------
+    target : str
+        Target molecule in SMILES format to synthesize.
+    retro_model : OneStepModel
+        Single-step retrosynthesis prediction model.
+    building_blocks : set[str]
+        Set of available starting materials.
+    heuristic_fns : list[Callable[[str], float]]
+        List of objective functions for multi-objective optimization.
+    top_n : int
+        Number of top reactions to consider per expansion.
+    max_depth : int
+        Maximum search depth (actual graph depth will be 2*max_depth).
+    iteration_budget : int
+        Maximum number of search iterations.
+    weight_iter_budget : int
+        Number of iterations before resampling weights.
+    time_budget : float, default 0.0
+        Maximum time budget in seconds (0.0 means no time limit).
+    weight_strategy : str, default "it"
+        Weight resampling strategy ("it" for iterative, "obj" for objective-based).
     """
 
     def __init__(
@@ -37,7 +60,7 @@ class MOSearch:
         time_budget: float = 0.0,
         weight_strategy: str = "it",  # "it" for iterative, "obj" for objective
     ):
-        self.max_depth = 2*max_depth
+        self.max_depth = 2 * max_depth
         self.retro_model = retro_model
         self.search_graph = MOGraph(
             target=target,
@@ -57,17 +80,22 @@ class MOSearch:
 
     def can_expand_retro(self, node: Nodes) -> bool:
         """
-        Check if the node can be expanded in the retrosynthetic direction
+        Check if the node can be expanded in the retrosynthetic direction.
+
         Checks:
-            1. Node is a MolNode
-            2. Node has not reached max depth
-            3. Node has not been expanded yet (is open)
+        1. Node is a MolNode (not a reaction node)
+        2. Node has not reached maximum depth
+        3. Node has not been expanded yet (is open)
 
-        Parameters:
-            node (MolNode): The node to check
+        Parameters
+        ----------
+        node : Nodes
+            The node to check for expansion eligibility.
 
-        Returns:
-            bool: True if the node can be expanded, False otherwise
+        Returns
+        -------
+        bool
+            True if the node can be expanded, False otherwise.
         """
         return (
             isinstance(node, MolNode) and node.depth < self.max_depth and node.is_open
@@ -75,14 +103,18 @@ class MOSearch:
 
     def retro_expansion(self, nodes_and_weights: MolNodeAndWeights) -> bool:
         """
-        Expands node of graph by adding predictions of single-step model
-        New nodes are added to the graph and values are updated accordingly
+        Expand graph nodes by adding predictions from the single-step model,
+        and update search graph values.
 
-        Parameters:
-            node (MolNode): The node to expand
+        Parameters
+        ----------
+        nodes_and_weights : MolNodeAndWeights
+            Set of tuples containing nodes to expand and their weight indices.
 
-        Returns:
-            bool: True if early resampling is triggered (all weights blocked), False otherwise
+        Returns
+        -------
+        bool
+            True if early resampling is triggered (all weights blocked), False otherwise.
         """
         nodes: list[MolNode] = []
         nodes_and_weights_copy = nodes_and_weights.copy()
@@ -92,17 +124,21 @@ class MOSearch:
                     if self.weights_open[w]:
                         self.weights_open[w] = False
                         logger.info(
-                            f"Node {node.smiles} cannot be expanded with depth {int(node.depth / 2)} and a pre-defined max depth {int(self.max_depth / 2)}."
+                            f"Node {node.smiles} cannot be expanded with depth {int(node.depth/2)} (max depth {int(self.max_depth/2)})"
                         )
-                        logger.warning(f"Weight {w} is now blocked from expansion until resampling.")
+                        logger.warning(
+                            f"Weight {w} is now blocked from expansion until resampling."
+                        )
                 nodes_and_weights.remove((node, weight))
             elif not self.can_expand_retro(node):
                 logger.critical("Critical error in expansion logic. This is a bug.")
             else:
                 nodes.append(node)
-        
+
         if not nodes:
-            logger.warning("All weights selected for expansion cannot expand further. Early resampling triggered.")
+            logger.warning(
+                "All weights selected for expansion cannot expand further. Early resampling triggered."
+            )
             return True
 
         smiles = [node.smiles for node in nodes]
@@ -132,18 +168,26 @@ class MOSearch:
         """
         Samples new weights to screen the Pareto front
 
-        Parameters:
-            num_iter (int): The number of iterations to sample new weights
-            early_resampling (bool): Whether the resampling is triggered early due to all weights being blocked
-        
-        Returns:
-            int: 1 to reinit weight counter, 0 otherwise
+        Parameters
+        ----------
+        num_iter : int
+            Current number of iterations completed.
+        early_resampling : bool
+            Whether resampling is triggered early due to all weights being blocked.
+
+        Returns
+        -------
+        int
+            1 to reset weight iteration counter, 0 for no action, -100 to exit search.
         """
         if self.weight_strategy == "it":
             if num_iter == self.weight_iter_budget + 1 or early_resampling:
                 logger.info("Sampling new weights...")
-                if self.search_graph.weights_open.shape[0] < self.search_graph.no_weights:
-                    return -100 # exit search 
+                if (
+                    self.search_graph.weights_open.shape[0]
+                    < self.search_graph.no_weights
+                ):
+                    return -100  # exit search
                 self.search_graph.reinitialize_graph()
                 return 1
         elif self.weight_strategy == "obj":
@@ -159,10 +203,17 @@ class MOSearch:
 
     def choose_next_nodes(self) -> MolNodeAndWeights:
         """
-        Select for each weight, which node to expand next.
+        Select nodes to expand next based on current weight preferences.
 
-        Returns:
-            MolNodeAndWeights: A set of tuples containing nodes and their corresponding weight indices
+        For each active weight vector, identifies the most promising nodes
+        (those with minimum total values) and groups weights that prefer
+        the same nodes to avoid redundant expansions.
+
+        Returns
+        -------
+        MolNodeAndWeights
+            Set of tuples containing selected nodes and their corresponding
+            weight indices for expansion.
         """
 
         # Convert set to sorted list for consistent ordering
@@ -189,9 +240,6 @@ class MOSearch:
 
         nodes_and_weights_to_expand = set()
         for key, dims in identical_groups.items():
-            # key contains the node indices that these weight dimensions prefer
-            # dims contains the weight dimension indices that prefer these nodes
-
             node_indices = list(key)
             # Assign different nodes to weights when possible, cycling through available nodes
             for i in range(len(dims)):
@@ -202,11 +250,17 @@ class MOSearch:
 
     def run_mo_search(self) -> None:
         """
-        Runs the multi-objective search process iteratively.
-            1. Select n nodes to expand based on n weights
-            2. Expand the selected nodes
-            3. Check if new weights should be sampled
-            4. Repeat until iteration budget is reached or Pareto front is stable
+        Execute the complete multi-objective search process.
+
+        Iteratively performs the following steps until termination conditions are met:
+        1. Check if new weights should be sampled based on strategy
+        2. Select promising nodes for expansion using current weights
+        3. Expand selected nodes with retrosynthesis predictions
+        4. Update graph values and Pareto front
+        5. Handle early resampling if all weights become blocked
+
+        The search terminates when the iteration budget is reached, time budget
+        is exceeded, no open nodes remain, or all weight vectors are exhausted.
         """
         logger.info("Starting multi-objective search process...")
         iter_counter = 1
@@ -221,7 +275,9 @@ class MOSearch:
                 if not self.search_graph.open_nodes:
                     logger.info("No open nodes left to expand.")
                 else:
-                    logger.info("All weights have been sampled, no more weights to explore.")
+                    logger.info(
+                        "All weights have been sampled, no more weights to explore."
+                    )
                 logger.info("Search process completed.")
                 break
 
@@ -229,7 +285,9 @@ class MOSearch:
 
             early_resampling = self.retro_expansion(nodes_and_weights_to_expand)
             if early_resampling:
-                weight_iter = self.spawn_new_weights(iter_counter, early_resampling=True)
+                weight_iter = self.spawn_new_weights(
+                    iter_counter, early_resampling=True
+                )
                 self.weights_open = [True] * self.search_graph.no_weights
             iter_counter += 1
             weight_iter += 1
