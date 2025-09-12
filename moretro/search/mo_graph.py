@@ -89,7 +89,7 @@ class MOGraph:
 
         target_known = self.target in self.building_blocks
         if target_known:
-            logging.info(f"Target {self.target} is already in the building blocks.")
+            logger.info(f"Target {self.target} is already in the building blocks.")
 
         self.target_node = MolNode(
             smiles=self.target,
