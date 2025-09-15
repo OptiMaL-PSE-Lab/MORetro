@@ -1,7 +1,7 @@
 import json
 import logging
 import pickle
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import gin
@@ -41,7 +41,7 @@ def prepare_starting_mols(file_path: str | Path) -> set[str]:
 
 
 @gin.configurable()
-def prepare_heuristic_fns(heuristics: list[str]) -> list[Callable[[str], float]]:
+def prepare_heuristic_fns(heuristics: list[str]) -> Sequence[Callable[[str], float]]:
     heuristic_fs = []
     for heuristic in heuristics:
         if heuristic in COST_MAPPING:

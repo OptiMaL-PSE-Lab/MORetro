@@ -141,10 +141,10 @@ class MOGraph:
         MolsAndWeights | None
             Set of new nodes and their weight indices.
         """
-        new_nodes = []
+        new_nodes: list[tuple[Nodes, WeightIndices]] = []
         list_expanded_nodes = sorted(expanded_nodes, key=lambda x: x[0].smiles)
         # check for reactants that appear more than once but are not in the current mol_to_node
-        reactants = []
+        reactants: list[str] = []
         for node, _ in list_expanded_nodes:
             for pred in predictions[node]:
                 react = pred["reactants"]
@@ -159,9 +159,7 @@ class MOGraph:
             node.is_open = False
             for pred in predictions[node]:
                 reactants = pred["reactants"]
-                reactants: list[str] = [
-                    Chem.CanonSmiles(reactant) for reactant in reactants
-                ]
+                reactants = [Chem.CanonSmiles(reactant) for reactant in reactants]
                 reagents = pred["reagents"]
                 temp = pred["temperature"]
                 rxn_smiles = pred["rxn_smiles"]
@@ -261,7 +259,7 @@ class MOGraph:
         new_solutions: dict[CostVector, WeightIndices] = {}
 
         # Group nodes by weight indices
-        weight_groups = {}
+        weight_groups: dict[WeightIndices, list[Nodes]] = {}
         for node, weight_indices in nodes_and_weights:
             if weight_indices not in weight_groups:
                 weight_groups[weight_indices] = []
@@ -270,14 +268,13 @@ class MOGraph:
         # sort dict so smallest weight_indices are processed first
         weight_groups = dict(sorted(weight_groups.items(), key=lambda item: item[0]))
         for weight_indices, nodes in weight_groups.items():
-            old_solutions = self.target_node.success_cost.keys()
-            old_solutions = set(old_solutions)
+            old_solutions = set(self.target_node.success_cost.keys())
 
             copy_weight_groups = weight_groups.copy()
             # * Do not accidentally uppropagate into rxns that are chosen by other weight groups
             copy_weight_groups.pop(weight_indices)
             # Get all reaction nodes from other weight groups
-            rxn_nodes = set()
+            rxn_nodes: set[RxnNode] = set()
             for other_nodes in copy_weight_groups.values():
                 rxn_nodes.update(
                     node for node in other_nodes if isinstance(node, RxnNode)
@@ -309,8 +306,7 @@ class MOGraph:
                         if parent not in queue and parent not in rxn_nodes:
                             heapq.heappush(queue, (-parent.depth, id(parent), parent))
 
-            current_solution = self.target_node.success_cost.keys()
-            current_solution = set(current_solution)
+            current_solution = set(self.target_node.success_cost.keys())
             new_costs = current_solution.difference(old_solutions)
             if new_costs:
                 new_solutions.update({cost: weight_indices for cost in new_costs})
@@ -342,11 +338,11 @@ class MOGraph:
             processed.add(node)
 
             if isinstance(node, RxnNode):
-                parents = cast(list[MolNode], list(self.graph.predecessors(node)))
-                children_update = node.downpropagate(parents[0])
+                parents_rxn = cast(list[MolNode], list(self.graph.predecessors(node)))
+                children_update = node.downpropagate(parents_rxn[0])
             elif isinstance(node, MolNode):
-                parents = cast(list[RxnNode], list(self.graph.predecessors(node)))
-                children_update = node.downpropagate(parents)
+                parents_mol = cast(list[RxnNode], list(self.graph.predecessors(node)))
+                children_update = node.downpropagate(parents_mol)
             else:
                 raise TypeError(
                     f"Node {node} is not of type RxnNode or MolNode, but {type(node)}"
@@ -448,7 +444,7 @@ class MOGraph:
 
         return pareto_updated
 
-    def reinitialize_graph(self):
+    def reinitialize_graph(self) -> None:
         """
         Spawn new weights and reinitialize all node values.
         """
@@ -472,7 +468,7 @@ class MOGraph:
             logger.info(f"Nodes processed during downprop: {len(downprop_processed)}")
             logger.info(f"Nodes updated during downprop: {len(downprop_updated)}")
 
-    def update_weights(self):
+    def update_weights(self) -> None:
         """
         Update active weights from weight pool.
         """

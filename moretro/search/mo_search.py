@@ -143,11 +143,11 @@ class MOSearch:
             return True
 
         smiles = [node.smiles for node in nodes]
-        predictions = self.retro_model.predict(
+        raw_predictions = self.retro_model.predict(
             smiles, self.top_n
         )  # * adds predictions with costs
         predictions = {
-            node: preds for node, preds in zip(nodes, predictions, strict=True)
+            node: preds for node, preds in zip(nodes, raw_predictions, strict=True)
         }
         new_nodes_and_weights = self.search_graph.expand_graph(
             predictions, nodes_and_weights

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 from moretro.search.node_type import MolNode, RxnNode
@@ -13,7 +13,7 @@ type CostVector = tuple[float, ...]
 type Nodes = MolNode | RxnNode
 type WeightIndices = tuple[int, ...]
 type Predictions = list[list[dict[str, Any]]]
-type CostFunctions = list[Callable[[dict[str, Any]], float]]
+type CostFunctions = Sequence[Callable[[dict[str, Any]], float]]
 
 # composite types storing paths
 type Path = list[Nodes]

@@ -131,7 +131,7 @@ class MolNode:
         bool
             True if node attributes were modified.
         """
-        new_success_cost = dict()
+        new_success_cost: PathCost = dict()
         success = False
         if self.is_known:  # known building block
             no_weights, _ = weights.shape
@@ -140,7 +140,7 @@ class MolNode:
             else:
                 new_rxn_no = self.objectives_to_scalar(weights)
             success = True
-            new_success_cost: PathCost = {tuple(self.success_cost_estimate): [self]}
+            new_success_cost = {tuple(self.success_cost_estimate): [self]}
         elif self.is_open:  # tip node of tree which is not a building block
             new_rxn_no = self.objectives_to_scalar(weights)
         elif len(children) > 0:  # interior node with children
@@ -154,11 +154,13 @@ class MolNode:
         else:  # no valid expansion
             new_rxn_no = np.full(weights.shape[0], np.inf)
 
-        new_rxn_no = new_rxn_no.tolist()  # convert to list for comparison
+        new_rxn_no_list = new_rxn_no.tolist()  # convert to list for comparison
         if (
-            self.rxn_no != new_rxn_no or new_success_cost or self.success != success
+            self.rxn_no != new_rxn_no_list
+            or new_success_cost
+            or self.success != success
         ):  # if any of the values changed, update the node and return bool True
-            self.rxn_no = new_rxn_no
+            self.rxn_no = new_rxn_no_list
             self.success = success
             self.success_cost.update(new_success_cost)
             return True
@@ -342,9 +344,13 @@ class RxnNode:
         if new_success:
             new_success_cost = self.track_success_cost(children)
 
-        new_rxn_no = new_rxn_no.tolist()
-        if self.rxn_no != new_rxn_no or new_success_cost or self.success != new_success:
-            self.rxn_no = new_rxn_no
+        new_rxn_no_list = new_rxn_no.tolist()
+        if (
+            self.rxn_no != new_rxn_no_list
+            or new_success_cost
+            or self.success != new_success
+        ):
+            self.rxn_no = new_rxn_no_list
             self.success = new_success
             self.success_cost.update(new_success_cost)
             return True
