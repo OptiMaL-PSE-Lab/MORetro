@@ -439,7 +439,11 @@ class MOGraph:
                 if i < len(self.weights)
             ]
             self.pareto_front[cost_vector] = weights
-            logger.info(f"Added new Pareto point: {cost_vector} with weights {weights}")
+            rounded_cost = [round(x, 2) for x in cost_vector]
+            rounded_weights = [[round(w, 2) for w in weight] for weight in weights]
+            logger.info(
+                f"Added new Pareto point: {rounded_cost} with weights {rounded_weights}"
+            )
             pareto_updated = True
 
         return pareto_updated

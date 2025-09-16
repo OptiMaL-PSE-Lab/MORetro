@@ -1,5 +1,6 @@
 import logging
 import logging.config as conf
+import pprint
 import tempfile
 from pathlib import Path as PathLib
 from typing import Any
@@ -22,7 +23,7 @@ from moretro.utils.typing_hints import Path
 
 # set up logging in this main file
 conf.fileConfig("moretro/configs/logging.conf")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("moretro")
 
 
 class MORetro:
@@ -39,18 +40,20 @@ class MORetro:
         """
         Run the multi-objective retrosynthesis search and plot results
         """
-        # try:
-        self.mo_search.run_mo_search()
-        logger.info("Search completed.")
-        # except KeyboardInterrupt:
-        # logger.warning("Search interrupted by user.")
-        # finally:
-        # TODO improve this
-        logger.info("Creating plots for target and saving in ./figs directory")
-        self.visualize_all_solutions()
-        self.plot_pareto_front()
-        solution_summary = self.get_solution_summary()
-        print(solution_summary)
+        try:
+            self.mo_search.run_mo_search()
+            logger.info("Search completed.")
+        except KeyboardInterrupt:
+            logger.warning("Search interrupted by user.")
+        finally:
+            # TODO improve this
+            logger.info("Creating plots for target and saving in ./figs directory")
+            self.visualize_all_solutions()
+            self.plot_pareto_front()
+            solution_summary = self.get_solution_summary()
+            logger.info(
+                "Solution summary: \n" + pprint.pformat(solution_summary, indent=2)
+            )
 
     def _visualize_path(self, path: Path, output_path: str, title: str):
         """
@@ -138,7 +141,7 @@ class MORetro:
         pareto_front = self.mo_search.search_graph.pareto_front
         solution_cost = self.mo_search.search_graph.solution_cost
 
-        print(f"Found {len(pareto_front)} Pareto-optimal solutions")
+        logger.info(f"Found {len(pareto_front)} Pareto-optimal solutions")
 
         for i, (cost_vector, _) in enumerate(pareto_front.items()):
             if cost_vector in solution_cost:
@@ -146,9 +149,9 @@ class MORetro:
                 title = f"Pareto Solution {i + 1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
                 output_path = str(PathLib(output_dir) / f"pareto_route_{i + 1}")
                 self._visualize_path(path, output_path, title)
-                print(f"Saved Pareto route {i + 1} to {output_path}.png")
+                logger.debug(f"Saved Pareto route {i + 1} to {output_path}.png")
 
-    def visualize_dominated_solutions(self, output_dir: str, max_solutions: int = 10):
+    def visualize_dominated_solutions(self, output_dir: str, max_solutions: int = 100):
         """
         Visualize dominated (non-Pareto) synthesis routes using direct path visualization.
 
@@ -172,14 +175,16 @@ class MORetro:
             if cost not in pareto_front
         ]
 
-        print(f"Found {len(dominated_solutions)} dominated solutions")
+        logger.info(f"Found {len(dominated_solutions)} dominated solutions")
         dominated_solutions = dominated_solutions[:max_solutions]
+        logger.debug(
+            f"Saving a max of {max_solutions} dominated solutions at {output_dir}"
+        )
 
         for i, (cost_vector, path, _) in enumerate(dominated_solutions):
             title = f"Dominated Solution {i + 1}\\nCost: {[f'{c:.3f}' for c in cost_vector]}"
             output_path = str(PathLib(output_dir) / f"dominated_route_{i + 1}")
             self._visualize_path(path, output_path, title)
-            print(f"Saved dominated route {i + 1} to {output_path}.png")
 
     def visualize_all_solutions(self, output_dir: str = "figs"):
         """
@@ -190,16 +195,20 @@ class MORetro:
         output_dir : str
             Base directory to save the visualization files
         """
-        pareto_dir = str(PathLib(output_dir) / "pareto" / self.target)
-        dominated_dir = str(PathLib(output_dir) / "dominated" / self.target)
+        # Create target-specific folder structure
+        safe_target_name = self._safe_smiles_dirname(self.target)
+        target_dir = str(PathLib(output_dir) / safe_target_name)
 
-        print("Visualizing Pareto-optimal solutions...")
+        pareto_dir = str(PathLib(target_dir) / "pareto")
+        dominated_dir = str(PathLib(target_dir) / "dominated")
+
+        logger.info("Visualizing Pareto-optimal solutions...")
         self.visualize_pareto_solutions(pareto_dir)
 
-        print("\nVisualizing dominated solutions...")
+        logger.info("Visualizing dominated solutions...")
         self.visualize_dominated_solutions(dominated_dir)
 
-        print(f"\nAll visualizations saved to {output_dir}")
+        logger.info(f"All visualizations saved to {target_dir}")
 
     def get_solution_summary(self) -> dict[str, Any]:
         """
@@ -227,9 +236,9 @@ class MORetro:
             all_costs_array = np.array(all_costs)
             summary["cost_ranges"] = {
                 f"objective_{i}": {
-                    "min": float(all_costs_array[:, i].min()),
-                    "max": float(all_costs_array[:, i].max()),
-                    "mean": float(all_costs_array[:, i].mean()),
+                    "min": round(float(all_costs_array[:, i].min()), 2),
+                    "max": round(float(all_costs_array[:, i].max()), 2),
+                    "mean": round(float(all_costs_array[:, i].mean()), 2),
                 }
                 for i in range(all_costs_array.shape[1])
             }
@@ -238,7 +247,7 @@ class MORetro:
 
     def plot_pareto_front(
         self,
-        output_path: str = "figs/pareto_front",
+        output_path: str | None = None,
         figsize: tuple[int, int] = (10, 6),
         show_weights: bool = True,
         weight_fontsize: int = 10,
@@ -249,7 +258,8 @@ class MORetro:
         Parameters
         ----------
         output_path : str
-            File path to save the plot (without extension)
+            File path to save the plot (without extension). If None, will save to
+            figs/{target_smiles}/pareto_front
         figsize : tuple[int, int]
             Figure size (width, height)
         show_weights : bool
@@ -260,8 +270,13 @@ class MORetro:
         pareto_front = self.mo_search.search_graph.pareto_front
 
         if not pareto_front:
-            print("No Pareto solutions found to plot.")
+            logger.warning("No Pareto solutions found to plot.")
             return
+
+        # Set default output path if not provided
+        if output_path is None:
+            safe_target_name = self._safe_smiles_dirname(self.target)
+            output_path = f"figs/{safe_target_name}/pareto_front"
 
         if not PathLib(output_path).parent.exists():
             PathLib(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -274,7 +289,7 @@ class MORetro:
         n_objectives = costs_array.shape[1]
 
         if n_objectives < 2:
-            print("Need at least 2 objectives to plot Pareto front.")
+            logger.warning("Need at least 2 objectives to plot Pareto front.")
             return
         elif n_objectives == 2:
             self._plot_pareto_2d(
@@ -295,7 +310,7 @@ class MORetro:
                 weight_fontsize,
             )
         else:
-            print(
+            logger.warning(
                 f"Plotting not supported for {n_objectives} objectives. Plotting first 3 dimensions."
             )
 
@@ -325,13 +340,15 @@ class MORetro:
 
         # Add weight labels if requested
         if show_weights:
-            for _, (cost, weight_list) in zip(costs_array, weights, strict=True):
+            for cost, weight_list in zip(costs_array, weights, strict=True):
                 # Format weight vector(s) for display
-                if len(weight_list) == 1:
-                    weight_str = f"[{', '.join([f'{w:.2f}' for w in weight_list[0]])}]"
-                else:
-                    weight_str = f"Weights: {len(weight_list)}"
+                weight_parts = []
+                weight_str = ""
+                for weight in weight_list:
+                    formatted_weights = [f"{w:.2f}" for w in weight]
+                    weight_parts.append(f"[{', '.join(formatted_weights)}]")
 
+                weight_str += "; ".join(weight_parts)
                 plt.annotate(
                     weight_str,
                     (cost[0], cost[1]),
@@ -361,7 +378,6 @@ class MORetro:
         plt.tight_layout()
         plt.savefig(f"{output_path}.png", dpi=300, bbox_inches="tight")
         plt.savefig(f"{output_path}.pdf", bbox_inches="tight")
-        print(f"2D Pareto front plot saved to {output_path}.png and {output_path}.pdf")
         plt.close()
 
     def _plot_pareto_3d(
@@ -393,11 +409,13 @@ class MORetro:
         if show_weights:
             for cost, weight_list in zip(costs_array, weights, strict=True):
                 # Format weight vector(s) for display
-                if len(weight_list) == 1:
-                    weight_str = f"[{', '.join([f'{w:.2f}' for w in weight_list[0]])}]"
-                else:
-                    weight_str = f"W:{len(weight_list)}"
+                weight_parts = []
+                weight_str = ""
+                for weight in weight_list:
+                    formatted_weights = [f"{w:.2f}" for w in weight]
+                    weight_parts.append(f"[{', '.join(formatted_weights)}]")
 
+                weight_str += "; ".join(weight_parts)
                 # Add text annotation
                 ax.text(cost[0], cost[1], cost[2], weight_str, fontsize=weight_fontsize)  # type: ignore
 
@@ -413,8 +431,33 @@ class MORetro:
         plt.tight_layout()
         plt.savefig(f"{output_path}.png", dpi=300, bbox_inches="tight")
         plt.savefig(f"{output_path}.pdf", bbox_inches="tight")
-        print(f"3D Pareto front plot saved to {output_path}.png and {output_path}.pdf")
         plt.close()
+
+    def _safe_smiles_dirname(self, smiles: str) -> str:
+        """
+        Convert SMILES string to a safe directory name by replacing problematic characters.
+
+        Parameters
+        ----------
+        smiles : str
+            SMILES string to convert
+
+        Returns
+        -------
+        str
+            Safe directory name
+        """
+        # Replace problematic characters with safe alternatives
+        safe_name = smiles.replace("/", "_slash_")
+        safe_name = safe_name.replace("\\", "_backslash_")
+        safe_name = safe_name.replace(":", "_colon_")
+        safe_name = safe_name.replace("*", "_star_")
+        safe_name = safe_name.replace("?", "_question_")
+        safe_name = safe_name.replace('"', "_quote_")
+        safe_name = safe_name.replace("<", "_lt_")
+        safe_name = safe_name.replace(">", "_gt_")
+        safe_name = safe_name.replace("|", "_pipe_")
+        return safe_name
 
 
 if __name__ == "__main__":
