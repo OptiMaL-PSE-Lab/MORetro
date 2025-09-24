@@ -14,6 +14,8 @@ objective_functions = ["economic_cost", "env_cost"]
 prepare_starting_mols.file_path = %building_blocks
 prepare_heuristic_fns.heuristics = %objective_functions
 
+# Bound for known models
+MOGraph.zero_bound = True
 # Weight Selection Parameters
 MOGraph.weight_samples = 66
 MOGraph.no_weights = 4

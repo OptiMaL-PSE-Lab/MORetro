@@ -65,6 +65,7 @@ class MOGraph:
         target: str,
         building_blocks: set[str],
         heuristic_fns: list[Callable[[str], float]],
+        zero_bound: bool = True,
         weight_samples: int = 64,
         no_weights: int = 5,
         weight_initial: str = "sobol",
@@ -73,6 +74,7 @@ class MOGraph:
         self.target = Chem.CanonSmiles(target)
         self.building_blocks = building_blocks
         self.heuristic_fns = heuristic_fns
+        self.zero_bound = zero_bound
         self.open_nodes: set[MolNode] = set()
         self.weight_samples = weight_samples
         self.no_weights = no_weights
@@ -97,6 +99,7 @@ class MOGraph:
             depth=0,
             is_known=target_known,
             is_open=not target_known,
+            zero_bound=self.zero_bound,
             is_target=True,  # Mark this node as the target
         )
 
@@ -205,6 +208,7 @@ class MOGraph:
                             heuristic_fns=self.heuristic_fns,
                             depth=node.depth + 2,
                             is_known=reactant_known,
+                            zero_bound=self.zero_bound,
                         )
                         self.mol_to_node[reactant] = reactant_node
                         self.graph.add_node(reactant_node, node_type="molecule")
