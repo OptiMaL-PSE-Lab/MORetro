@@ -1,10 +1,12 @@
 import json
 from logging import Logger
 from pathlib import Path
+from typing import Any
 
 import gin
 import torch
 
+from moretro.external.quarc.quarc_predictor import QuarcPredictor
 from moretro.external.template_models import TemplRel
 from moretro.inference.calculate_costs import COST_MAPPING, calculate_costs
 from moretro.utils.typing_hints import Predictions
@@ -30,7 +32,7 @@ class OneStepModel:
         self.model_type = model_type
         self.checkpoint_path = file_path.parent / checkpoint_path
         self.template_path = file_path.parent / template_path if template_path else None
-        self.condition_model = ConditionPrediction(gin.REQUIRED)  # type: ignore
+        self.condition_model = ConditionModel(gin.REQUIRED)  # type: ignore
         logger.info(f"Loading Single-Step Model from {self.checkpoint_path}")
 
         self.cost_functions = []
@@ -85,34 +87,88 @@ class OneStepModel:
         if isinstance(target, list) and len(target) == 1:
             target = target[0]
         predictions = self.model.predict(target, top_n, self.templates)
-        predictions = self._add_cost_and_condition(predictions)
-        return predictions
+        updated_predictions = self._add_cost_and_condition(predictions)
+        return updated_predictions
 
     def _add_cost_and_condition(self, predictions: Predictions) -> Predictions:
         # Add cost calculations and missing fields to each prediction
+        updated_predictions = []
         for mol_predictions in predictions:
-            for pred in mol_predictions:
-                costs = calculate_costs(pred, self.cost_functions)
-                temp, reagents = self.condition_model.predict(pred["rxn_smiles"])
-                pred["costs"] = costs
-                pred["temperature"] = temp
-                pred["reagents"] = reagents
-        return predictions
+            rxn_smiles = [pred["rxn_smiles"] for pred in mol_predictions]
+            if not rxn_smiles:
+                updated_predictions.append(mol_predictions)
+                continue
+            conditions = self.condition_model.predict(rxn_smiles)
+            expanded_mol_predictions = []
+            for pred, topk_cond in zip(mol_predictions, conditions, strict=True):
+                for cond in topk_cond:
+                    # Create a copy of the prediction for each condition
+                    pred_copy = pred.copy()
+                    pred_copy["temperature"] = cond["temperature"]
+                    pred_copy["reagents"] = ".".join(cond["reagents"])
+                    if "agent_amounts" in cond:
+                        pred_copy["agent_amounts"] = cond["agent_amounts"]
+                    costs = calculate_costs(pred_copy, self.cost_functions)
+                    pred_copy["costs"] = costs
+                    expanded_mol_predictions.append(pred_copy)
+
+            updated_predictions.append(expanded_mol_predictions)
+        return updated_predictions
 
 
 @gin.configurable()
-class ConditionPrediction:
+class ConditionModel:
     """
     Prediction of reaction conditions given the reaction string
     """
 
-    def __init__(self, model_path: str):
-        self.model_path = model_path
+    def __init__(
+        self,
+        model_type: str,
+        config_path: str,
+        device: str,
+        top_k: int,
+        beam_size: int,
+    ):
+        self.model_type = model_type
+        self.config_path = file_path.parent / config_path
+        self.device = device
+        self.top_k = top_k
+        self.beam_size = beam_size
+        if self.model_type == "quarc":
+            self.model = QuarcPredictor(
+                config_path=self.config_path, device=self.device
+            )
+        elif self.model_type == "rct":
+            # TODO implement this
+            raise NotImplementedError("R-CT model not implemented yet.")
+        else:
+            raise ValueError(f"Unsupported condition model type: {self.model_type}")
 
-    def predict(self, rxn_smiles: str) -> tuple[int, str]:
+    def predict(self, rxn_smiles: list[str]) -> list[list[dict[str, Any]]]:
         """
         Predict the reaction conditions for a given reaction SMILES.
         This method should be implemented by subclasses.
         """
-        # TODO do this properly, for now dummy variables
-        return 8, "int"
+        results = self.model.predict(rxn_smiles, self.top_k, self.beam_size)
+        results = self._clean_up_prediction(results)
+        return results
+
+    def _clean_up_prediction(
+        self, predictions: list[list[dict[str, Any]]]
+    ) -> list[list[dict[str, Any]]]:
+        """
+        Clean up the predictions by removing duplicate entries.
+        """
+        cleaned_predictions = []
+        for mol_preds in predictions:
+            seen = set()
+            unique_preds = []
+            for pred in mol_preds:
+                # NOTE: This ignores the reagent amount for now.
+                pred_tuple = (pred["temperature"], tuple(pred["reagents"]))
+                if pred_tuple not in seen:
+                    seen.add(pred_tuple)
+                    unique_preds.append(pred)
+            cleaned_predictions.append(unique_preds)
+        return cleaned_predictions

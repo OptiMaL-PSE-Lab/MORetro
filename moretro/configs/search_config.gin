@@ -1,10 +1,11 @@
 import moretro.moretro_star
 
+device = "cuda" # used for ML models
+
 # Checkpoint files
 retro_model = "models/model_retro.pt"
-condition_model ="models/model_condition.pt"
 retro_templates = "models/idx2template_retro.json"
-building_blocks = "models/bb_smaller.json"
+building_blocks = "models/bb_mol2idx.json"
 
 # Objectives
 objective_functions = ["economic_cost", "env_cost"]
@@ -34,4 +35,8 @@ retro_prediction.OneStepModel.template_path = %retro_templates
 retro_prediction.OneStepModel.cost_functions = %objective_functions
 
 # Condition model
-retro_prediction.ConditionPrediction.model_path = %condition_model
+retro_prediction.ConditionModel.model_type = "quarc"
+retro_prediction.ConditionModel.config_path = "external/quarc/configs"
+retro_prediction.ConditionModel.device = %device
+retro_prediction.ConditionModel.top_k = 2
+retro_prediction.ConditionModel.beam_size = 5
