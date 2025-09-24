@@ -58,7 +58,6 @@ class MORetro:
     def _visualize_path(self, path: Path, output_path: str, title: str):
         """
         Directly visualize a solution path using the graph structure.
-        Simple and efficient approach that works directly with your path-based storage.
 
         Parameters
         ----------
@@ -117,12 +116,30 @@ class MORetro:
 
     def _add_rxn_node(self, node: RxnNode, dot: graphviz.Digraph):
         """Add a reaction node to the graph."""
+        # Create label with temperature and reagents
+        label_parts = []
+
+        # Add temperature at the top
+        if hasattr(node, "temp") and node.temp is not None:
+            label_parts.append(f"{node.temp}°C")
+
+        # Add reagent molecules
+        if hasattr(node, "reagents") and node.reagents:
+            # Split reagents by "." and create molecule images for each
+            reagent_smiles = node.reagents.split(".")
+            for reagent in reagent_smiles:
+                if reagent.strip():  # Skip empty strings
+                    label_parts.append(reagent.strip())
+
+        # Combine all parts with line breaks
+        label = "\\n".join(label_parts) if label_parts else ""
+
         dot.node(
             node.smiles,
-            label="",
+            label=label,
             shape="box",
             style="rounded",
-            color="lightgoldenrod1",
+            color="lightsteelblue",
             penwidth="2",
         )
 
