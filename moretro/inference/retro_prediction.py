@@ -82,7 +82,7 @@ class OneStepModel:
             Each prediction dict contains: ["rxn_smiles", "reactants", "template", "score", "costs", "reagents", "temperature"]
         """
         # Get predictions from the underlying model
-        if len(target) == 1:
+        if isinstance(target, list) and len(target) == 1:
             target = target[0]
         predictions = self.model.predict(target, top_n, self.templates)
         predictions = self._add_cost_and_condition(predictions)
