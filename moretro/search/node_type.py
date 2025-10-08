@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from itertools import product
 
 import numpy as np
-from rdkit import Chem
 
 type Vector = list[float]
 type Path = list[MolNode | RxnNode]
@@ -85,10 +84,6 @@ class MolNode:
                 self.success_cost_estimate = zero_vector(len(self.value_estimates))
             else:
                 self.success_cost_estimate = self.value_estimates
-        self.smiles = self._canonicalize_smiles(self.smiles)
-
-    def _canonicalize_smiles(self, smiles: str) -> str:
-        return Chem.CanonSmiles(smiles)
 
     def _calculate_heuristics(self) -> list[float]:
         objectives = []
