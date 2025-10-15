@@ -375,8 +375,20 @@ class MOGraph:
             True if Pareto front was updated.
         """
         pareto_updated = False
+        old_pareto = set(self.pareto_front.keys())
+
+        # Sync solution_cost with current target_node.success_cost
+        # Remove solutions that are no longer in target_node (filtered out)
+        current_target_costs = set(self.target_node.success_cost.keys())
+        costs_to_remove = set(self.solution_cost.keys()) - current_target_costs
+        for cost in costs_to_remove:
+            self.solution_cost.pop(cost, None)
 
         for cost_vector, weight_indices in new_solutions.items():
+            # Skip if this solution was filtered out from target_node
+            if cost_vector not in self.target_node.success_cost:
+                continue
+
             # Get the path information from target node's success_cost
             path_nodes = self.target_node.success_cost[cost_vector]
 
@@ -387,10 +399,18 @@ class MOGraph:
 
             # Store the new solution with path and global indices
             self.solution_cost[cost_vector] = (path_nodes, global_weight_indices)
-
             # Check if this should be added to Pareto front
             if self.pareto_check_helper(cost_vector, weight_indices):
                 pareto_updated = True
+
+        if pareto_updated:
+            new_pareto = set(self.pareto_front.keys())
+            added_points = new_pareto.difference(old_pareto)
+            for point in added_points:
+                rounded_cost = [round(x, 2) for x in point]
+                weights = self.pareto_front[point]
+                rounded_weights = [[round(w, 2) for w in weight] for weight in weights]
+                logger.info(f"New Pareto point: Cost {rounded_cost}, Weights {rounded_weights}")
 
         return pareto_updated
 
@@ -443,11 +463,6 @@ class MOGraph:
                 if i < len(self.weights)
             ]
             self.pareto_front[cost_vector] = weights
-            rounded_cost = [round(x, 2) for x in cost_vector]
-            rounded_weights = [[round(w, 2) for w in weight] for weight in weights]
-            logger.info(
-                f"Added new Pareto point: {rounded_cost} with weights {rounded_weights}"
-            )
             pareto_updated = True
 
         return pareto_updated

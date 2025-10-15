@@ -19,6 +19,54 @@ def zero_vector(length: int) -> list[float]:
     return [0.0] * length
 
 
+def filter_pareto_with_dominated(
+    self,
+    all_solutions: PathCost,
+    max_dominated: int = 5,
+) -> PathCost:
+    """Return Pareto-optimal solutions plus up to ``max_dominated`` dominated ones."""
+    if not all_solutions:
+        return {}
+
+    max_keep = max(0, int(max_dominated))
+    items = list(all_solutions.items())
+
+    if len(items) == 1:
+        self.local_pareto = dict(items)
+        return dict(items)
+
+    costs = np.array([cost for cost, _ in items], dtype=float)
+    cost_rounded = np.round(costs, 3)
+    leq = cost_rounded[:, None, :] <= cost_rounded[None, :, :]
+    lt = cost_rounded[:, None, :] < cost_rounded[None, :, :]
+    dominates_matrix = np.all(leq, axis=2) & np.any(lt, axis=2)
+    is_dominated = dominates_matrix.any(axis=0)
+
+    pareto_indices = np.flatnonzero(~is_dominated)
+    dominated_indices = np.flatnonzero(is_dominated)
+
+    if max_keep and dominated_indices.size:
+        dominated_costs = costs[dominated_indices].sum(axis=1)
+        order = np.argsort(dominated_costs)[:max_keep]
+        keep_dominated = set(dominated_indices[order])
+    else:
+        keep_dominated = set()
+
+    keep_pareto = set(pareto_indices)
+
+    result: PathCost = {}
+    for idx, (cost, path) in enumerate(items):
+        if idx in keep_pareto or idx in keep_dominated:
+            result[cost] = path
+
+    self.local_pareto = {
+        tuple(cost): all_solutions[tuple(cost)]
+        for cost in costs[pareto_indices].tolist()
+    }
+
+    return result
+
+
 @dataclass(frozen=False)
 class MolNode:
     """
@@ -35,6 +83,10 @@ class MolNode:
         Depth of the node in the search tree. Root (target) molecule has depth 0.
     is_known : bool
         Whether this molecule is available in the building blocks (known starting materials).
+    pareto_objectives : int
+        Number of Pareto objectives.
+    max_dominated_solutions : int
+        Maximum number of dominated solutions to keep.
     rxn_no : Vector (list[float])
         Reaction number vector containing scalar values for each weight group.
     _total_value : Vector (list[float])
@@ -60,12 +112,18 @@ class MolNode:
         Heuristic-based estimates for each objective.
     success_cost_estimate : Vector (list[float])
         Cost estimate for successful synthesis (only set for known molecules).
+    local_pareto : PathCost
+        Local Pareto front of solutions.
+    successor_cost_already_checked : set
+        Set of costs that have already been checked for successors.
     """
 
     smiles: str = field(compare=True)
     heuristic_fns: list[Callable[[str], float]]
     depth: int
     is_known: bool
+    pareto_objectives: int
+    max_dominated_solutions: int
     rxn_no: Vector = field(default_factory=list)
     _total_value: Vector = field(default_factory=list)
     success: bool = False
@@ -77,13 +135,17 @@ class MolNode:
     def __post_init__(self) -> None:
         self.h_length: int = len(self.heuristic_fns)
         self.value_estimates = self._calculate_heuristics()
+        self.local_pareto: PathCost = dict()
+        self.successor_cost_already_checked = set()
 
         if self.is_known:  # initiate the objectives
             self.is_open = False
             if self.zero_bound:
-                self.success_cost_estimate = zero_vector(len(self.value_estimates))
+                self.success_cost_estimate = zero_vector(self.pareto_objectives)
             else:
-                self.success_cost_estimate = self.value_estimates
+                self.success_cost_estimate = self.value_estimates[
+                    : self.pareto_objectives
+                ]
 
     def _calculate_heuristics(self) -> list[float]:
         objectives = []
@@ -110,7 +172,9 @@ class MolNode:
             rxn_no.append(np.dot(np.array(self.value_estimates), weight))
         return np.array(rxn_no)
 
-    def uppropagate(self, children: list[RxnNode], weights: np.ndarray) -> bool:
+    def uppropagate(
+        self, children: list[RxnNode], weights: np.ndarray, child_new_success
+    ) -> tuple[bool, bool]:
         """
         Propagate costs upward from reaction children (OR logic).
 
@@ -120,11 +184,14 @@ class MolNode:
             Reaction node children (synthesis routes).
         weights : np.ndarray
             Weight matrix for scalarization.
+        child_new_success : bool
+            Whether any child has new success.
 
         Returns
         -------
-        bool
-            True if node attributes were modified.
+        tuple[bool, bool]
+            First bool: True if node attributes were modified.
+            Second bool: True if there was new success.
         """
         new_success_cost: PathCost = dict()
         success = False
@@ -157,9 +224,14 @@ class MolNode:
         ):  # if any of the values changed, update the node and return bool True
             self.rxn_no = new_rxn_no_list
             self.success = success
-            self.success_cost.update(new_success_cost)
-            return True
-        return False
+            # Replace entire success_cost with filtered solutions (prevents unbounded growth)
+            if new_success_cost:
+                self.success_cost = new_success_cost
+                child_new_success = True
+            else:
+                child_new_success = False
+            return (True, child_new_success)
+        return (False, False)
 
     def downpropagate(self, parents: list[RxnNode]) -> bool:
         """
@@ -189,6 +261,8 @@ class MolNode:
     def track_success_cost(self, children: list[RxnNode]) -> PathCost:
         """
         Track successful synthesis paths from child reactions.
+        Maintains local Pareto front + top N dominated solutions.
+        Returns the complete filtered solution set (Pareto + top N dominated).
 
         Parameters
         ----------
@@ -197,26 +271,76 @@ class MolNode:
         Returns
         -------
         PathCost
-            Updated success cost dictionary.
+            Complete filtered solution dictionary. Empty if nothing changed.
         """
-        new_success_cost = dict()
+        # Collect all candidate solutions from children (including current ones)
+        all_candidate_solutions = self.success_cost.copy()
+
+        # Collect all possible costs and successors from children
         all_costs_successors = {
             cost: successor
             for child in children
             for cost, successor in child.success_cost.items()
-            if successor  # Filter out empty successors
+            if successor
+            and (
+                cost not in self.successor_cost_already_checked
+                or cost in self.local_pareto.keys()
+            )
         }
 
-        current_success_cost_keys = set(self.success_cost.keys())
+        # add all successors to already checked set
+        for cost in all_costs_successors.keys():
+            self.successor_cost_already_checked.add(cost)
 
+        # Group by reaction SMILES to find paths for each unique reaction
+        reaction_groups = {}
         for cost, successor in all_costs_successors.items():
-            # check if the cost is already in the success_cost
-            if cost in current_success_cost_keys:
-                continue
+            if successor and hasattr(successor[-1], "smiles"):
+                rxn_smiles = successor[-1].smiles if len(successor) > 0 else None
+                # sort reactants in reaction smiles according to len
+                if rxn_smiles:
+                    reactants_part, products_part = rxn_smiles.split(">>")
+                    reactants = sorted(reactants_part.split("."), key=len)
+                    rxn_smiles = ".".join(reactants) + ">>" + products_part
+
+                reactant_smiles = tuple(
+                    sorted(
+                        [
+                            node.smiles
+                            for node in successor
+                            if isinstance(node, MolNode)
+                        ],
+                        key=len,
+                    )
+                )
+                group_key = (rxn_smiles, reactant_smiles)
+                if group_key not in reaction_groups:
+                    reaction_groups[group_key] = []
+                reaction_groups[group_key].append((cost, successor))
+
+        # For each reaction group, add the path with lowest total cost to candidates
+        for _, cost_successor_pairs in reaction_groups.items():
+            if len(cost_successor_pairs) > 1:
+                min_pair = min(cost_successor_pairs, key=lambda x: sum(x[0]))
+                cost, successor = min_pair
+            else:
+                cost, successor = cost_successor_pairs[0]
 
             new_path = successor + [self]
-            new_success_cost[cost] = new_path
-        return new_success_cost
+            all_candidate_solutions[cost] = new_path
+
+        # Apply Pareto filtering (skip for target molecule to keep all solutions)
+        filtered_solutions = filter_pareto_with_dominated(
+            self,
+            all_candidate_solutions,
+            50 if self.is_target else self.max_dominated_solutions,
+        )
+
+        # Return complete filtered set if anything changed, empty dict otherwise
+        if filtered_solutions != self.success_cost:
+            return filtered_solutions
+
+        return {}
 
     @property
     def total_value(self) -> Vector:
@@ -236,6 +360,9 @@ class MolNode:
     def __hash__(self) -> int:
         return id(self)
 
+    def __repr__(self) -> str:
+        return f"MolNode(smiles='{self.smiles}', depth={self.depth}, success={self.success})"
+
 
 @dataclass(frozen=False)
 class RxnNode:
@@ -248,7 +375,7 @@ class RxnNode:
         Reaction in SMILES format.
     template : str
         Reaction template in SMARTS format.
-    reagents : str
+    reagents : list[str]
         Required reagents/catalysts.
     temp : float
         Reaction temperature in Kelvin.
@@ -258,6 +385,10 @@ class RxnNode:
         Multi-dimensional reaction cost.
     weight_length : int
         Number of weight samples.
+    pareto_objectives : int
+        Number of Pareto objectives.
+    max_dominated_solutions : int
+        Maximum number of dominated solutions to keep.
     total_value : Vector
         Total value vector, one for each group of weights (default: empty list).
     rxn_no : Vector
@@ -277,11 +408,13 @@ class RxnNode:
 
     smiles: str
     template: str
-    reagents: str
+    reagents: list[str]
     temp: float
     depth: int
     cost: Vector  # Actual cost of reaction in n dimensions
     weight_length: int
+    pareto_objectives: int
+    max_dominated_solutions: int
     total_value: Vector = field(default_factory=list)  # one for each group of weight
     rxn_no: Vector = field(default_factory=list)  # one for each group of weights
     success_cost: PathCost = field(default_factory=dict)
@@ -293,7 +426,7 @@ class RxnNode:
             logger.error("Reaction cost cannot be empty!")
             raise ValueError("Reaction cost must be provided")
 
-        reaction_hash = hash((self.smiles, self.reagents))
+        reaction_hash = hash((self.smiles, tuple(self.reagents)))
         normalized_hash = (abs(reaction_hash) % 100) + 1
         self._delta_offset = normalized_hash * 1e-15
         self.true_cost = self.cost.copy()
@@ -301,7 +434,9 @@ class RxnNode:
         self.rxn_no = zero_vector(self.weight_length)
         self.total_value = zero_vector(self.weight_length)
 
-    def uppropagate(self, children: list[MolNode], weights: np.ndarray) -> bool:
+    def uppropagate(
+        self, children: list[MolNode], weights: np.ndarray, child_new_success: bool
+    ) -> tuple[bool, bool]:
         """
         Propagate costs upward from molecule children (AND logic).
 
@@ -311,20 +446,23 @@ class RxnNode:
             Molecule node children (reactants).
         weights : np.ndarray
             Weight matrix for scalarization.
+        child_new_success : bool
+            Whether any child has new success.
 
         Returns
         -------
-        bool
-            True if node attributes were modified.
+        tuple[bool, bool]
+            First bool: True if node attributes were modified.
+            Second bool: True if there was new success.
 
         """
-        new_success = False
+        success = False
         if not children:
             logger.error(
                 "Reaction node must have at least one child to propagate from!"
             )
             raise ValueError("No children provided for RxnNode")
-        new_success = all([child.success for child in children])
+        success = all(child.success for child in children)
         new_rxn_no = np.zeros(len(self.rxn_no))
         new_success_cost = dict()
 
@@ -336,20 +474,25 @@ class RxnNode:
         rxn_cost = weights @ self.true_cost
         new_rxn_no += rxn_cost
 
-        if new_success:
+        if success:
             new_success_cost = self.track_success_cost(children)
 
         new_rxn_no_list = new_rxn_no.tolist()
         if (
             self.rxn_no != new_rxn_no_list
             or new_success_cost
-            or self.success != new_success
+            or self.success != success
         ):
             self.rxn_no = new_rxn_no_list
-            self.success = new_success
-            self.success_cost.update(new_success_cost)
-            return True
-        return False
+            self.success = success
+            # Replace entire success_cost with filtered solutions (prevents unbounded growth)
+            if new_success_cost:
+                self.success_cost = new_success_cost
+                child_new_success = True
+            else:
+                child_new_success = False
+            return (True, child_new_success)
+        return (False, False)
 
     def downpropagate(self, parent: MolNode) -> bool:
         """
@@ -383,6 +526,8 @@ class RxnNode:
     def track_success_cost(self, children: list[MolNode]) -> PathCost:
         """
         Track synthesis paths from child molecules (AND logic).
+        Maintains local Pareto front + top N dominated solutions.
+        Returns the complete filtered solution set (Pareto + top N dominated).
 
         Parameters
         ----------
@@ -392,10 +537,10 @@ class RxnNode:
         Returns
         -------
         PathCost
-            Updated success cost dictionary with path combinations.
+            Complete filtered solution dictionary. Empty if nothing changed.
         """
-        new_success_cost = dict()
-        current_success_cost_keys = set(self.success_cost.keys())
+        # Collect all candidate solutions (including current ones)
+        all_candidate_solutions = self.success_cost.copy()
 
         children_costs = [list(child.success_cost.keys()) for child in children]
         for cost_combination in product(*children_costs):
@@ -405,25 +550,36 @@ class RxnNode:
             for i, cost in enumerate(cost_combination):
                 child_successor = children[i].success_cost[cost]
 
-                if isinstance(child_successor, tuple):  # for typing consistency
+                if isinstance(child_successor, tuple):
                     child_nodes, _ = child_successor
                     successor_nodes.extend(child_nodes)
                 else:
-                    # Path format: list of nodes
                     successor_nodes.extend(child_successor)
 
             # Calculate total cost: sum of children costs + reaction cost
             children_total_cost = np.sum(np.array(cost_combination), axis=0)
-            reaction_total_cost = children_total_cost + np.array(self.cost)
+            reaction_total_cost = (
+                children_total_cost + np.array(self.cost)[: self.pareto_objectives]
+            )
             reaction_total_cost = tuple(reaction_total_cost.tolist())
 
-            # Check if this cost already exists
-            if reaction_total_cost not in current_success_cost_keys:
-                # Add this reaction to the path and store
-                successor_nodes.append(self)
-                new_success_cost[reaction_total_cost] = successor_nodes
+            # Add this reaction to the path
+            successor_nodes_with_rxn = successor_nodes + [self]
+            all_candidate_solutions[reaction_total_cost] = successor_nodes_with_rxn
 
-        return new_success_cost
+        # Apply Pareto filtering once at the end
+        filtered_solutions = filter_pareto_with_dominated(
+            self, all_candidate_solutions, self.max_dominated_solutions
+        )
+
+        # Return complete filtered set if anything changed, empty dict otherwise
+        if filtered_solutions != self.success_cost:
+            return filtered_solutions
+
+        return {}
 
     def __hash__(self) -> int:
         return id(self)
+
+    def __repr__(self) -> str:
+        return f"RxnNode(smiles='{self.smiles}', depth={self.depth}, success={self.success})"
