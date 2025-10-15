@@ -123,7 +123,6 @@ class LogPPredictor:
             return predictions.tolist()
 
         except Exception as e:
-            end_time = time.time()
             raise RuntimeError(f"Prediction failed: {e}")
 
     def predict_from_file(
