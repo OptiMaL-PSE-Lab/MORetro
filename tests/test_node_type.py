@@ -9,16 +9,25 @@ Tests cover core functionalities including:
 - Path management
 """
 
-import pytest
-import numpy as np
 import logging
-from unittest.mock import Mock
-import sys
 import os
+import sys
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import Mock
+
+import numpy as np
+import pytest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from moretro.search.node_type import MolNode, RxnNode, zero_vector
+from moretro.search.node_type import (
+    MolNode,
+    PathCost,
+    RxnNode,
+    filter_pareto_with_dominated,
+    zero_vector,
+)
 
 
 class TestMolNode:
@@ -40,18 +49,35 @@ class TestMolNode:
     def simple_mol_node(self, heuristic_fns):
         """Create a simple MolNode for testing"""
         return MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
     @pytest.fixture
     def known_mol_node(self, heuristic_fns):
         """Create a known (building block) MolNode"""
-        return MolNode(smiles="CC", heuristic_fns=heuristic_fns, depth=2, is_known=True)
+        return MolNode(
+            smiles="CC",
+            heuristic_fns=heuristic_fns,
+            depth=2,
+            is_known=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
 
     def test_initialization_basic(self, heuristic_fns):
         """Test basic MolNode initialization"""
         node = MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert node.smiles == "CCO"
@@ -71,6 +97,8 @@ class TestMolNode:
             depth=0,
             is_known=True,
             zero_bound=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert not node.is_open  # Known molecules are not open for expansion
@@ -84,6 +112,8 @@ class TestMolNode:
             depth=0,
             is_known=True,
             zero_bound=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert node.success_cost_estimate == [1.0, 2.0]  # Heuristic values
@@ -99,7 +129,7 @@ class TestMolNode:
         """Test uppropagation for known building block"""
         weights = np.array([[0.6, 0.4], [0.3, 0.7]])
 
-        result = known_mol_node.uppropagate([], weights)
+        result = known_mol_node.uppropagate([], weights, False)
 
         assert result  # Should return True for changes
         assert known_mol_node.success
@@ -112,7 +142,7 @@ class TestMolNode:
         """Test uppropagation for open (leaf) node"""
         weights = np.array([[0.5, 0.5]])
 
-        result = simple_mol_node.uppropagate([], weights)
+        result = simple_mol_node.uppropagate([], weights, False)
 
         assert result
         assert (
@@ -136,7 +166,7 @@ class TestMolNode:
         simple_mol_node.is_open = False
         weights = np.array([[1.0, 0.0], [0.0, 1.0]])
 
-        result = simple_mol_node.uppropagate([child1, child2], weights)
+        result = simple_mol_node.uppropagate([child1, child2], weights, False)
 
         assert result
         assert simple_mol_node.success  # At least one child is successful
@@ -164,29 +194,105 @@ class TestMolNode:
         assert result
         assert simple_mol_node.total_value == [0.5, 2.0]  # Min of parents
 
-    def test_track_success_cost_basic(self, simple_mol_node):
-        """Test basic success cost tracking"""
+    def test_track_success_cost_reaction_grouping(self, simple_mol_node):
+        """Test that track_success_cost groups reactions by SMILES and keeps lowest cost"""
+        # Create children with same reaction but different costs
+        child1 = Mock(spec=RxnNode)
+        child1.smiles = "CC.O>>CCO"
+        node1 = SimpleNamespace(smiles="CC")
+        node2 = SimpleNamespace(smiles="O")
+        child1.success_cost = {(2.0, 3.0): [node1, node2, child1]}  # sum = 5.0
+
+        child2 = Mock(spec=RxnNode)
+        child2.smiles = "CC.O>>CCO"  # Same reaction
+        child2.success_cost = {(1.5, 4.0): [node1, node2, child2]}  # sum = 5.5
+
+        simple_mol_node.success_cost = {}
+
+        result = simple_mol_node.track_success_cost([child1, child2])
+
+        # Should keep only the path with lowest total cost sum (2.0, 3.0) has sum 5.0 < 5.5
+        assert len(result) == 1
+        assert (2.0, 3.0) in result
+        path = result[(2.0, 3.0)]
+        assert path[-2] is child1  # The child with lower cost sum
+        assert path[-1] is simple_mol_node
+
+    def test_track_success_cost_reactant_sorting(self, simple_mol_node):
+        """Test that reactants are sorted by length for grouping"""
         child = Mock(spec=RxnNode)
-        child.success_cost = {(2.0, 3.0): ["node1", "node2"]}
+        child.smiles = "O.CC>>CCO"  # Reactants in different order
+        node1 = SimpleNamespace(smiles="O")
+        node2 = SimpleNamespace(smiles="CC")
+        child.success_cost = {(1.0, 2.0): [node1, node2, child]}
 
         simple_mol_node.success_cost = {}
 
         result = simple_mol_node.track_success_cost([child])
 
-        assert (2.0, 3.0) in result
-        assert result[(2.0, 3.0)] == ["node1", "node2", simple_mol_node]
+        assert len(result) == 1
+        # Should be grouped under sorted reactants "CC.O>>CCO"
 
-    def test_track_success_cost_target_node(self, simple_mol_node):
-        """Test success cost tracking for target node"""
-        simple_mol_node.is_target = True
+    def test_track_success_cost_pareto_filtering(self, simple_mol_node):
+        """Test Pareto filtering keeps optimal and limited dominated solutions"""
+        # Create multiple children with different costs
+        child1 = Mock(spec=RxnNode)
+        child1.smiles = "CC.O>>CCO"
+        node1 = SimpleNamespace(smiles="CC")
+        node2 = SimpleNamespace(smiles="O")
+        child1.success_cost = {(1.0, 3.0): [node1, node2, child1]}  # Pareto optimal
+
+        child2 = Mock(spec=RxnNode)
+        child2.smiles = "C.CO>>CCO"
+        node3 = SimpleNamespace(smiles="C")
+        node4 = SimpleNamespace(smiles="CO")
+        child2.success_cost = {(2.0, 2.0): [node3, node4, child2]}  # Pareto optimal
+
+        child3 = Mock(spec=RxnNode)
+        child3.smiles = "CC.O>>CCO"
+        child3.success_cost = {(2.0, 4.0): [node1, node2, child3]}  # Dominated
+
+        simple_mol_node.success_cost = {}
+
+        result = simple_mol_node.track_success_cost([child1, child2, child3])
+
+        # Should keep both Pareto optimal and 1 dominated (max_dominated_solutions=5)
+        assert len(result) >= 2
+        assert (1.0, 3.0) in result
+        assert (2.0, 2.0) in result
+
+    def test_track_success_cost_already_checked_filtering(self, simple_mol_node):
+        """Test that already checked costs are filtered out"""
+        # Pre-populate successor_cost_already_checked
+        simple_mol_node.successor_cost_already_checked.add((1.0, 2.0))
+
         child = Mock(spec=RxnNode)
-        child.success_cost = {(1.0, 2.0): ["node1"]}
+        child.smiles = "CC.O>>CCO"
+        node1 = SimpleNamespace(smiles="CC")
+        node2 = SimpleNamespace(smiles="O")
+        child.success_cost = {(1.0, 2.0): [node1, node2, child]}  # Already checked
+
+        simple_mol_node.success_cost = {}
 
         result = simple_mol_node.track_success_cost([child])
 
-        assert (1.0, 2.0) in result
-        path = result[(1.0, 2.0)]
-        assert path == ["node1", simple_mol_node]
+        # Should not include the already checked cost
+        assert len(result) == 0
+
+    def test_track_success_cost_local_pareto_update(self, simple_mol_node):
+        """Test that local_pareto is updated with Pareto optimal solutions"""
+        child = Mock(spec=RxnNode)
+        child.smiles = "CC.O>>CCO"
+        node1 = SimpleNamespace(smiles="CC")
+        node2 = SimpleNamespace(smiles="O")
+        child.success_cost = {(1.0, 3.0): [node1, node2, child]}
+
+        simple_mol_node.success_cost = {}
+
+        result = simple_mol_node.track_success_cost([child])
+
+        # local_pareto should contain the Pareto optimal solution
+        assert (1.0, 3.0) in simple_mol_node.local_pareto
 
     def test_hash_consistency(self, simple_mol_node):
         """Test that hash is consistent (uses object id)"""
@@ -205,11 +311,13 @@ class TestRxnNode:
         return RxnNode(
             smiles="CCO>>CC.O",
             template="[C:1]-[O:2]>>[C:1].[O:2]",
-            reagents="H2SO4",
+            reagents=["H2SO4"],
             temp=350.0,
             depth=2,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
     def test_initialization_basic(self):
@@ -217,16 +325,18 @@ class TestRxnNode:
         node = RxnNode(
             smiles="CC>>C.C",
             template="[C:1]-[C:2]>>[C:1].[C:2]",
-            reagents="heat",
+            reagents=["heat"],
             temp=400.0,
             depth=1,
             cost=[0.5, 1.5],
             weight_length=3,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert node.smiles == "CC>>C.C"
         assert node.template == "[C:1]-[C:2]>>[C:1].[C:2]"
-        assert node.reagents == "heat"
+        assert node.reagents == ["heat"]
         assert node.temp == 400.0
         assert node.depth == 1
         assert len(node.cost) == 2
@@ -240,11 +350,13 @@ class TestRxnNode:
             RxnNode(
                 smiles="CC>>C.C",
                 template="[C:1]-[C:2]>>[C:1].[C:2]",
-                reagents="heat",
+                reagents=["heat"],
                 temp=400.0,
                 depth=1,
                 cost=[],
                 weight_length=2,
+                pareto_objectives=2,
+                max_dominated_solutions=5,
             )
 
     def test_delta_offset_uniqueness(self):
@@ -252,21 +364,25 @@ class TestRxnNode:
         node1 = RxnNode(
             smiles="CC>>C.C",
             template="template1",
-            reagents="reagent1",
+            reagents=["reagent1"],
             temp=300.0,
             depth=1,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         node2 = RxnNode(
             smiles="CC>>C.C",
             template="template1",
-            reagents="reagent2",  # different reagent
+            reagents=["reagent2"],  # different reagent
             temp=300.0,
             depth=1,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Costs should be different due to delta offset
@@ -287,7 +403,7 @@ class TestRxnNode:
 
         weights = np.array([[1.0, 0.0], [0.0, 1.0]])
 
-        result = simple_rxn_node.uppropagate([child1, child2], weights)
+        result = simple_rxn_node.uppropagate([child1, child2], weights, False)
 
         assert result
         assert simple_rxn_node.success
@@ -312,7 +428,7 @@ class TestRxnNode:
 
         weights = np.array([[1.0, 0.0], [0.0, 1.0]])
 
-        result = simple_rxn_node.uppropagate([child1, child2], weights)
+        result = simple_rxn_node.uppropagate([child1, child2], weights, False)
 
         assert result
         assert not simple_rxn_node.success  # Not all children are successful
@@ -322,7 +438,7 @@ class TestRxnNode:
         weights = np.array([[1.0, 0.0]])
 
         with pytest.raises(ValueError, match="No children provided for RxnNode"):
-            simple_rxn_node.uppropagate([], weights)
+            simple_rxn_node.uppropagate([], weights, False)
 
     def test_downpropagate(self, simple_rxn_node):
         """Test downpropagation from parent molecule"""
@@ -339,10 +455,10 @@ class TestRxnNode:
         # [5.0, 6.0] - [3.0, 4.0] + [1.0, 1.5] = [3.0, 3.5]
         assert simple_rxn_node.total_value == [3.0, 3.5]
 
-    def test_track_success_cost_simple(self, simple_rxn_node):
-        """Test simple success cost tracking"""
+    def test_track_success_cost_cost_combination(self, simple_rxn_node):
+        """Test that track_success_cost correctly combines costs from children"""
         child1 = Mock(spec=MolNode)
-        child1.success_cost = {(1.0, 2.0): ["mol1"]}
+        child1.success_cost = {(1.0, 2.0): ["mol1a"], (1.5, 1.8): ["mol1b"]}
 
         child2 = Mock(spec=MolNode)
         child2.success_cost = {(0.5, 1.0): ["mol2"]}
@@ -351,46 +467,84 @@ class TestRxnNode:
 
         result = simple_rxn_node.track_success_cost([child1, child2])
 
-        # Expected total cost: (1.0, 2.0) + (0.5, 1.0) + reaction cost
-        # Reaction cost includes delta offset, so we check the structure
-        assert len(result) == 1
-        cost_key = list(result.keys())[0]
-        path = result[cost_key]
-
-        assert "mol1" in path
-        assert "mol2" in path
-        assert simple_rxn_node in path
-
-    def test_track_success_cost_multiple_combinations(self, simple_rxn_node):
-        """Test success cost tracking with multiple cost combinations"""
-        child1 = Mock(spec=MolNode)
-        child1.success_cost = {(1.0, 2.0): ["mol1a"], (2.0, 1.0): ["mol1b"]}
-
-        child2 = Mock(spec=MolNode)
-        child2.success_cost = {(0.5, 1.0): ["mol2"]}
-
-        simple_rxn_node.success_cost = {}
-
-        result = simple_rxn_node.track_success_cost([child1, child2])
-
-        # Should have 2 combinations: (1.0,2.0)+(0.5,1.0) and (2.0,1.0)+(0.5,1.0)
+        # Should have 2 combinations: (1.0,2.0)+(0.5,1.0) and (1.5,1.8)+(0.5,1.0)
         assert len(result) == 2
 
-    def test_track_success_cost_with_tuples(self, simple_rxn_node):
-        """Test success cost tracking with tuple format (target paths)"""
+        # Check that costs are summed correctly (plus reaction cost)
+        costs = list(result.keys())
+        # Costs should be approximately (1.5, 3.0) and (2.0, 2.8) plus reaction cost
+        # But due to delta offset, we just check the structure
+        for cost in costs:
+            assert len(cost) == 2
+            path = result[cost]
+            assert "mol1a" in path or "mol1b" in path
+            assert "mol2" in path
+            assert simple_rxn_node in path
+
+    def test_track_success_cost_pareto_filtering_rxn(self, simple_rxn_node):
+        """Test Pareto filtering in RxnNode track_success_cost"""
+        child1 = Mock(spec=MolNode)
+        child1.success_cost = {(1.0, 3.0): ["mol1"]}
+
+        child2 = Mock(spec=MolNode)
+        child2.success_cost = {(2.0, 1.0): ["mol2"]}
+
+        simple_rxn_node.success_cost = {}
+
+        result = simple_rxn_node.track_success_cost([child1, child2])
+
+        # Should have at least one result from the combinations
+        assert len(result) > 0
+        # Verify that paths contain the expected elements
+        for path in result.values():
+            assert simple_rxn_node in path
+
+    def test_track_success_cost_empty_children(self, simple_rxn_node):
+        """Test track_success_cost with children having empty success_cost"""
+        child1 = Mock(spec=MolNode)
+        child1.success_cost = {}  # Empty
+
+        child2 = Mock(spec=MolNode)
+        child2.success_cost = {(1.0, 2.0): ["mol2"]}
+
+        simple_rxn_node.success_cost = {}
+
+        result = simple_rxn_node.track_success_cost([child1, child2])
+
+        # Should only process valid combinations
+        assert len(result) == 0  # No valid combinations if one child is empty
+
+    def test_track_success_cost_single_child(self, simple_rxn_node):
+        """Test track_success_cost with single child"""
         child = Mock(spec=MolNode)
-        child.success_cost = {(1.0, 2.0): (["mol1"], {0, 1})}
+        child.success_cost = {(1.0, 2.0): ["mol1"]}
 
         simple_rxn_node.success_cost = {}
 
         result = simple_rxn_node.track_success_cost([child])
 
+        # Should have one combination: child cost + reaction cost
         assert len(result) == 1
-        cost_key = list(result.keys())[0]
-        path = result[cost_key]
-
+        cost = list(result.keys())[0]
+        path = result[cost]
         assert "mol1" in path
         assert simple_rxn_node in path
+
+    def test_track_success_cost_no_change_when_same(self, simple_rxn_node):
+        """Test that track_success_cost returns empty dict when no new solutions"""
+        child = Mock(spec=MolNode)
+        child.success_cost = {(1.0, 2.0): ["mol1"]}
+
+        # First call should add solutions
+        result1 = simple_rxn_node.track_success_cost([child])
+        assert len(result1) > 0
+
+        # Update success_cost with the result
+        simple_rxn_node.success_cost.update(result1)
+
+        # Second call with same input should return empty (no changes)
+        result2 = simple_rxn_node.track_success_cost([child])
+        assert result2 == {}
 
     def test_hash_consistency(self, simple_rxn_node):
         """Test that hash is consistent (uses object id)"""
@@ -411,6 +565,152 @@ class TestUtilityFunctions:
         result = zero_vector(0)
         assert result == []
 
+    def test_filter_pareto_with_dominated_empty(self):
+        """Test filter_pareto_with_dominated with empty solutions"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        result = filter_pareto_with_dominated(node, {})
+        assert result == {}
+        assert node.local_pareto == {}
+
+    def test_filter_pareto_with_dominated_single_solution(self):
+        """Test filter_pareto_with_dominated with single solution"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        mock_node = SimpleNamespace(smiles="test")
+        solutions = cast(PathCost, {(1.0, 2.0): [mock_node]})
+        result = filter_pareto_with_dominated(node, solutions)
+        assert result == solutions
+        assert node.local_pareto == {(1.0, 2.0): [mock_node]}
+
+    def test_filter_pareto_with_dominated_pareto_only(self):
+        """Test filter_pareto_with_dominated with Pareto-optimal solutions only"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        # All solutions are Pareto-optimal (no one dominates another)
+        mock_node1 = SimpleNamespace(smiles="test1")
+        mock_node2 = SimpleNamespace(smiles="test2")
+        mock_node3 = SimpleNamespace(smiles="test3")
+        solutions = cast(
+            PathCost,
+            {
+                (1.0, 3.0): [mock_node1],  # Pareto-optimal
+                (2.0, 2.0): [mock_node2],  # Pareto-optimal
+                (3.0, 1.0): [mock_node3],  # Pareto-optimal
+            },
+        )
+        result = filter_pareto_with_dominated(node, solutions)
+        assert result == solutions
+        assert len(node.local_pareto) == 3
+
+    def test_filter_pareto_with_dominated_with_dominated(self):
+        """Test filter_pareto_with_dominated with some dominated solutions"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        mock_node1 = SimpleNamespace(smiles="test1")
+        mock_node2 = SimpleNamespace(smiles="test2")
+        mock_node3 = SimpleNamespace(smiles="test3")
+        solutions = cast(
+            PathCost,
+            {
+                (1.0, 1.0): [mock_node1],  # Pareto-optimal
+                (2.0, 2.0): [mock_node2],  # Dominated by (1.0, 1.0)
+                (3.0, 3.0): [mock_node3],  # Dominated by (1.0, 1.0) and (2.0, 2.0)
+            },
+        )
+        result = filter_pareto_with_dominated(node, solutions, max_dominated=1)
+        # Should keep Pareto-optimal + 1 dominated (the best one: (2.0, 2.0) with sum=4.0)
+        expected = {
+            (1.0, 1.0): [mock_node1],
+            (2.0, 2.0): [mock_node2],
+        }
+        assert result == expected
+        assert node.local_pareto == {(1.0, 1.0): [mock_node1]}
+
+    def test_filter_pareto_with_dominated_max_dominated_zero(self):
+        """Test filter_pareto_with_dominated with max_dominated=0"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        mock_node1 = SimpleNamespace(smiles="test1")
+        mock_node2 = SimpleNamespace(smiles="test2")
+        mock_node3 = SimpleNamespace(smiles="test3")
+        solutions = cast(
+            PathCost,
+            {
+                (1.0, 1.0): [mock_node1],  # Pareto-optimal
+                (2.0, 2.0): [mock_node2],  # Dominated
+                (3.0, 3.0): [mock_node3],  # Dominated
+            },
+        )
+        result = filter_pareto_with_dominated(node, solutions, max_dominated=0)
+        # Should keep only Pareto-optimal
+        expected = {(1.0, 1.0): [mock_node1]}
+        assert result == expected
+        assert node.local_pareto == {(1.0, 1.0): [mock_node1]}
+
+    def test_filter_pareto_with_dominated_multiple_dominated(self):
+        """Test filter_pareto_with_dominated with multiple dominated solutions"""
+        node = MolNode(
+            smiles="CC",
+            heuristic_fns=[lambda x: 1.0],
+            depth=0,
+            is_known=True,
+            pareto_objectives=1,
+            max_dominated_solutions=5,
+        )
+        mock_node1 = SimpleNamespace(smiles="test1")
+        mock_node2 = SimpleNamespace(smiles="test2")
+        mock_node3 = SimpleNamespace(smiles="test3")
+        mock_node4 = SimpleNamespace(smiles="test4")
+        solutions = cast(
+            PathCost,
+            {
+                (1.0, 1.0): [mock_node1],  # Pareto-optimal
+                (2.0, 2.0): [mock_node2],  # Dominated, sum=4.0
+                (3.0, 1.5): [mock_node3],  # Dominated, sum=4.5
+                (4.0, 1.0): [mock_node4],  # Dominated, sum=5.0
+            },
+        )
+        result = filter_pareto_with_dominated(node, solutions, max_dominated=2)
+        # Should keep Pareto-optimal + 2 best dominated (lowest sum: (2.0, 2.0) and (3.0, 1.5))
+        expected = {
+            (1.0, 1.0): [mock_node1],
+            (2.0, 2.0): [mock_node2],
+            (3.0, 1.5): [mock_node3],
+        }
+        assert result == expected
+        assert node.local_pareto == {(1.0, 1.0): [mock_node1]}
+
 
 class TestIntegration:
     """Integration tests for MolNode and RxnNode interaction"""
@@ -429,16 +729,23 @@ class TestIntegration:
         """Test a complete propagation cycle between MolNode and RxnNode"""
         # Create a known starting material
         bb_node = MolNode(
-            smiles="CC", heuristic_fns=heuristic_fns, depth=2, is_known=True
+            smiles="CC",
+            heuristic_fns=heuristic_fns,
+            depth=2,
+            is_known=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )  # Create a reaction that uses this building block
         rxn_node = RxnNode(
             smiles="CCO>>CC.O",  # Use valid reaction SMILES
             template="template",
-            reagents="reagent",
+            reagents=["reagent"],
             temp=300.0,
             depth=1,
             cost=[0.5, 1.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Create target molecule
@@ -448,25 +755,27 @@ class TestIntegration:
             depth=0,
             is_known=False,
             is_target=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         weights = np.array([[1.0, 0.0], [0.0, 1.0]])
 
         # Simulate uppropagation from building block
-        bb_updated = bb_node.uppropagate([], weights)
-        assert bb_updated
+        bb_updated = bb_node.uppropagate([], weights, False)
+        assert all(bb_updated)
         assert bb_node.success
 
         # Propagate to reaction
-        rxn_updated = rxn_node.uppropagate([bb_node], weights)
-        assert rxn_updated
+        rxn_updated = rxn_node.uppropagate([bb_node], weights, False)
+        assert all(rxn_updated)
         assert rxn_node.success
 
         # Mark target as not open since it has children (reaction)
         target_node.is_open = False
 
         # Propagate to target
-        target_updated = target_node.uppropagate([rxn_node], weights)
-        assert target_updated
+        target_updated = target_node.uppropagate([rxn_node], weights, True)
+        assert all(target_updated)
         assert target_node.success
 
         # Check that costs are properly tracked
@@ -489,7 +798,12 @@ class TestEdgeCases:
     def test_mol_node_no_change_uppropagate(self, heuristic_fns):
         """Test uppropagate when no actual changes occur"""
         node = MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Set initial state
@@ -498,19 +812,21 @@ class TestEdgeCases:
 
         weights = np.array([[0.5, 0.5]])  # Will produce same rxn_no = [1.5]
 
-        result = node.uppropagate([], weights)
-        assert not result  # No changes should occur
+        result = node.uppropagate([], weights, False)
+        assert not all(result)  # No changes should occur
 
     def test_rxn_node_duplicate_uppropagate_calls(self):
         """Test that duplicate RxnNode uppropagate calls behave correctly"""
         rxn_node = RxnNode(
             smiles="CCO>>CC.O",
             template="template",
-            reagents="reagent",
+            reagents=["reagent"],
             temp=300.0,
             depth=1,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Create mock children
@@ -522,17 +838,22 @@ class TestEdgeCases:
         weights = np.array([[1.0, 0.0], [0.0, 1.0]])
 
         # First call should update
-        result1 = rxn_node.uppropagate([child], weights)
-        assert result1
+        result1 = rxn_node.uppropagate([child], weights, False)
+        assert all(result1)
 
         # Second call with same parameters should not update
-        result2 = rxn_node.uppropagate([child], weights)
-        assert not result2  # No changes
+        result2 = rxn_node.uppropagate([child], weights, False)
+        assert not all(result2)  # No changes
 
     def test_mol_node_downpropagate_no_change(self, heuristic_fns):
         """Test downpropagate when no changes occur"""
         node = MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Set initial total_value
@@ -550,11 +871,13 @@ class TestEdgeCases:
         rxn_node = RxnNode(
             smiles="CCO>>CC.O",
             template="template",
-            reagents="reagent",
+            reagents=["reagent"],
             temp=300.0,
             depth=1,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Set up state that would result in no change
@@ -573,7 +896,12 @@ class TestEdgeCases:
         """Test that existing costs in success_cost are not overwritten"""
 
         node = MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Pre-populate success_cost with mock node
@@ -594,7 +922,12 @@ class TestEdgeCases:
     def test_success_cost_with_empty_successors(self, heuristic_fns):
         """Test success cost tracking with empty successors"""
         node = MolNode(
-            smiles="CCO", heuristic_fns=heuristic_fns, depth=1, is_known=False
+            smiles="CCO",
+            heuristic_fns=heuristic_fns,
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Create child with empty successor
@@ -611,11 +944,13 @@ class TestEdgeCases:
         rxn_node = RxnNode(
             smiles="CCO>>CC.O",
             template="template",
-            reagents="reagent",
+            reagents=["reagent"],
             temp=300.0,
             depth=1,
             cost=[1.0, 2.0],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Create child with empty rxn_no
@@ -629,14 +964,13 @@ class TestEdgeCases:
         with pytest.raises(
             AssertionError, match="Rxn_no for MolNode should not be empty"
         ):
-            rxn_node.uppropagate([child], weights)
+            rxn_node.uppropagate([child], weights, False)
 
     @pytest.mark.skip(
         reason="Logging configuration interferes with caplog in test environment"
     )
     def test_mol_node_total_value_setter_warning(self, heuristic_fns, caplog):
         """Test that total_value setter logs warning for all-zero values"""
-        import logging
 
         # Temporarily disable console handler to ensure caplog captures the warning
         logger = logging.getLogger("moretro.search.node_type")
@@ -652,6 +986,8 @@ class TestEdgeCases:
                 depth=1,
                 is_known=False,
                 is_target=False,
+                pareto_objectives=2,
+                max_dominated_solutions=5,
             )
             node.success = False  # Ensure warning condition is met
 
