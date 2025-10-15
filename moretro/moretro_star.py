@@ -69,7 +69,7 @@ class MORetro:
             Title for the visualization
         """
         dot = graphviz.Digraph(format="png")
-        dot.attr(label=title, labelloc="t", fontsize="16")
+        dot.attr(label=title, labelloc="t", fontsize="16", rankdir="LR")
 
         with tempfile.TemporaryDirectory() as temp_img_dir:
             # Draw all nodes in the path
@@ -126,7 +126,7 @@ class MORetro:
         # Add reagent molecules
         if hasattr(node, "reagents") and node.reagents:
             # Split reagents by "." and create molecule images for each
-            reagent_smiles = node.reagents.split(".")
+            reagent_smiles = node.reagents
             for reagent in reagent_smiles:
                 if reagent.strip():  # Skip empty strings
                     label_parts.append(reagent.strip())
@@ -358,20 +358,19 @@ class MORetro:
         # Add weight labels if requested
         if show_weights:
             for cost, weight_list in zip(costs_array, weights, strict=True):
-                # Format weight vector(s) for display
+                # Format weight vector(s) for display - each nested list on a new line
                 weight_parts = []
-                weight_str = ""
                 for weight in weight_list:
                     formatted_weights = [f"{w:.2f}" for w in weight]
                     weight_parts.append(f"[{', '.join(formatted_weights)}]")
 
-                weight_str += "; ".join(weight_parts)
+                weight_str = "\n".join(weight_parts)
                 plt.annotate(
                     weight_str,
                     (cost[0], cost[1]),
                     xytext=(5, 5),
                     textcoords="offset points",
-                    fontsize=weight_fontsize,
+                    fontsize=max(6, weight_fontsize - 2),  # Make font size smaller
                     bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
                 )
 
@@ -425,16 +424,21 @@ class MORetro:
         # Add weight labels if requested
         if show_weights:
             for cost, weight_list in zip(costs_array, weights, strict=True):
-                # Format weight vector(s) for display
+                # Format weight vector(s) for display - each nested list on a new line
                 weight_parts = []
-                weight_str = ""
                 for weight in weight_list:
                     formatted_weights = [f"{w:.2f}" for w in weight]
                     weight_parts.append(f"[{', '.join(formatted_weights)}]")
 
-                weight_str += "; ".join(weight_parts)
+                weight_str = "\n".join(weight_parts)
                 # Add text annotation
-                ax.text(cost[0], cost[1], cost[2], weight_str, fontsize=weight_fontsize)  # type: ignore
+                ax.text(
+                    cost[0],
+                    cost[1],
+                    cost[2],
+                    weight_str,  # type: ignore
+                    fontsize=max(6, weight_fontsize - 2),
+                )
 
         ax.set_xlabel("Objective 1", fontsize=12)
         ax.set_ylabel("Objective 2", fontsize=12)
@@ -479,6 +483,8 @@ class MORetro:
 
 if __name__ == "__main__":
     gin.parse_config_file("moretro/configs/search_config.gin")
-    target_smiles = "CC(C)c1ccc(-n2nc(O)c3c(=O)c4ccc(Cl)cc4[nH]c3c2=O)cc1"  # Example target: Aspirin
+    target_smiles = (
+        "CC(C)(CNC(=O)/C=C/c1ccc(N)nc1)Oc1cc(Cl)cc(-c2ccc(C(=O)N3CCOCC3)cc2)c1"
+    )
     moretro = MORetro(target_smiles)
     moretro.search()

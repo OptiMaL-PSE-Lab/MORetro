@@ -92,7 +92,7 @@ class OneStepModel:
 
     def _add_cost_and_condition(self, predictions: Predictions) -> Predictions:
         # Add cost calculations and missing fields to each prediction
-        updated_predictions = []
+        updated_predictions: Predictions = []
         for mol_predictions in predictions:
             rxn_smiles = [pred["rxn_smiles"] for pred in mol_predictions]
             if not rxn_smiles:
@@ -105,14 +105,13 @@ class OneStepModel:
                     # Create a copy of the prediction for each condition
                     pred_copy = pred.copy()
                     pred_copy["temperature"] = cond["temperature"]
-                    pred_copy["reagents"] = ".".join(cond["reagents"])
+                    pred_copy["reagents"] = cond["reagents"]
                     if "agent_amounts" in cond:
                         pred_copy["agent_amounts"] = cond["agent_amounts"]
-                    costs = calculate_costs(pred_copy, self.cost_functions)
-                    pred_copy["costs"] = costs
                     expanded_mol_predictions.append(pred_copy)
-
             updated_predictions.append(expanded_mol_predictions)
+
+        updated_predictions = calculate_costs(updated_predictions, self.cost_functions)
         return updated_predictions
 
 

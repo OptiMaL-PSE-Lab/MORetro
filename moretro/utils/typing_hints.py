@@ -13,7 +13,10 @@ type CostVector = tuple[float, ...]
 type Nodes = MolNode | RxnNode
 type WeightIndices = tuple[int, ...]
 type Predictions = list[list[dict[str, Any]]]
-type CostFunctions = Sequence[Callable[[dict[str, Any]], float]]
+type IndividualCostFunction = Callable[[dict[str, Any]], float]
+type BatchedCostFunction = Callable[[list[dict[str, Any]]], list[float]]
+type CostFunction = IndividualCostFunction | BatchedCostFunction
+type CostFunctions = Sequence[CostFunction]
 
 # composite types storing paths
 type Path = list[Nodes]
