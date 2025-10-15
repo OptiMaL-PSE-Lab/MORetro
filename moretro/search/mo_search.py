@@ -233,21 +233,27 @@ class MOSearch:
             dim_indices = np.where(is_min[:, i])[0].tolist()
             indices_per_dim.append(dim_indices)
 
-        # Find which weight dimensions want to expand the same nodes
+        # Group identical dimensions first, then handle overlaps
         identical_groups = defaultdict(list)
-
         for i, indices in enumerate(indices_per_dim):
-            # Use sorted tuple as key to group identical lists
             key = tuple(sorted(indices))
             identical_groups[key].append(i)
 
+        # Remove overlapping nodes from longer keys
+        used_nodes = set()
+        final_groups = {}
+
+        for key in sorted(identical_groups.keys(), key=len):
+            remaining = tuple(x for x in key if x not in used_nodes)
+            if remaining:
+                final_groups[remaining] = identical_groups[key]
+                used_nodes.update(remaining)
+
         nodes_and_weights_to_expand = set()
-        for key, dims in identical_groups.items():
-            node_indices = list(key)
-            # Assign different nodes to weights when possible, cycling through available nodes
-            for i in range(len(dims)):
-                node_idx = node_indices[i % len(node_indices)]
+        for key, dims in final_groups.items():
+            for node_idx in key:
                 nodes_and_weights_to_expand.add((open_nodes[node_idx], tuple(dims)))
+                node = open_nodes[node_idx]
 
         return nodes_and_weights_to_expand
 
