@@ -200,9 +200,10 @@ def toxicity_cost(prediction: dict[str, Any]) -> float:
         if agent in TOXICITY_DATA:
             score = max(TOXICITY_DATA[agent], score)  # Keep the worst score
         else:
-            raise ValueError(
-                f"Agent {agent} not found in toxicity data. Please update toxicity data."
+            logger.warning(
+                f"Agent '{agent}' not found in toxicity data. Assigning default toxicity cost of 0.5. Please update toxicity data if this agent is expected."
             )
+            score = max(0.5, score)  # Assign default cost for missing agent
     return score
 
 
