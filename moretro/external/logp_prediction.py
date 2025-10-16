@@ -102,7 +102,7 @@ class LogPPredictor:
 
             # Create data loader using ChemProp's build_dataloader
             # Set num_workers=0 for prediction to avoid multiprocessing overhead and warnings
-            test_loader = data.build_dataloader(test_dataset, shuffle=False, num_workers=0, batch_size=128)
+            test_loader = data.build_dataloader(test_dataset, shuffle=False, num_workers=0, batch_size=256)
 
             # Set up trainer for prediction
             with torch.inference_mode():
