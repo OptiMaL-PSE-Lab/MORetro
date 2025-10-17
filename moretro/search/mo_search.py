@@ -46,6 +46,8 @@ class MOSearch:
         Maximum time budget in seconds (0.0 means no time limit).
     weight_strategy : str, default "it"
         Weight resampling strategy ("it" for iterative, "obj" for objective-based).
+    max_pareto_solutions : int, default 250
+        Maximum number of Pareto solutions to find before stopping search.
     """
 
     def __init__(
@@ -60,6 +62,7 @@ class MOSearch:
         weight_iter_budget: int,
         time_budget: float = 0.0,
         weight_strategy: str = "it",  # "it" for iterative, "obj" for objective
+        max_pareto_solutions: int = 250,
     ):
         self.max_depth = 2 * max_depth
         self.retro_model = retro_model
@@ -67,6 +70,8 @@ class MOSearch:
             target=target,
             building_blocks=building_blocks,
             heuristic_fns=heuristic_fns,
+            pareto_objectives=gin.REQUIRED,  # type: ignore
+            max_dominated_solutions=gin.REQUIRED,  # type: ignore
             weight_samples=gin.REQUIRED,  # type: ignore
             no_weights=gin.REQUIRED,  # type: ignore
             weight_initial=gin.REQUIRED,  # type: ignore
@@ -77,6 +82,7 @@ class MOSearch:
         self.weight_iter_budget = weight_iter_budget
         self.iteration_budget = iteration_budget
         self.time_budget = time_budget
+        self.max_pareto_solutions = max_pareto_solutions
         self.weights_open: list[bool] = [True] * self.search_graph.no_weights
 
     def can_expand_retro(self, node: Nodes) -> bool:
@@ -249,12 +255,17 @@ class MOSearch:
                 final_groups[remaining] = identical_groups[key]
                 used_nodes.update(remaining)
 
+        # sort final groups by index key to ensure consistent order
+        final_groups = dict(sorted(final_groups.items(), key=lambda item: item[0]))
         nodes_and_weights_to_expand = set()
         for key, dims in final_groups.items():
+            i = 1
             for node_idx in key:
                 nodes_and_weights_to_expand.add((open_nodes[node_idx], tuple(dims)))
                 node = open_nodes[node_idx]
-
+                if i >= len(dims):
+                    break
+                i += 1
         return nodes_and_weights_to_expand
 
     def run_mo_search(self) -> None:
@@ -279,6 +290,11 @@ class MOSearch:
         while iter_counter < self.iteration_budget and elapsed_time < self.time_budget:
             torch.cuda.empty_cache()
             weight_iter = self.spawn_new_weights(weight_iter, early_resampling=False)
+            if len(self.search_graph.pareto_front) >= self.max_pareto_solutions:
+                logger.info(
+                    f"Reached {self.max_pareto_solutions} Pareto solutions. Stopping search."
+                )
+                break
             break_condition = not self.search_graph.open_nodes or weight_iter < 0
             if break_condition:
                 if not self.search_graph.open_nodes:
@@ -298,6 +314,7 @@ class MOSearch:
                     iter_counter, early_resampling=True
                 )
                 self.weights_open = [True] * self.search_graph.no_weights
+            logger.info(f"Completed iteration {iter_counter}/{self.iteration_budget}.")
             iter_counter += 1
             weight_iter += 1
             elapsed_time = time.time() - start_time
