@@ -507,6 +507,8 @@ class MOGraph:
             )
         elif init_type == "dirichlet":
             return self.rng.dirichlet(np.ones(n_obj), size=self.weight_samples)
+        elif init_type == "grid":
+            return self._grid_initialization()
         else:
             raise ValueError(f"Unknown weight initialization type: {init_type}")
 
@@ -567,3 +569,32 @@ class MOGraph:
             f"Generated {sobol_samples_needed} Sobol samples + {n_obj} extreme points = {n_samples} total weight vectors"
         )
         return weights
+
+    def _grid_initialization(self) -> np.ndarray:
+        """
+        Generate grid-based weight vectors.
+
+        Returns
+        -------
+        np.ndarray
+            Grid-based weight vectors.
+        """
+        if len(self.heuristic_fns) <= 3:
+            # Generate grid points with a step size of 0.25 (0, 0.25, 0.5, 0.75, 1) that sum to 1
+            steps = [0.0, 0.25, 0.5, 0.75, 1.0]
+        else:
+            # Coarser steps for higher dim
+            steps = [0.0, 1 / 3, 2 / 3, 1.0]
+        grid_points = np.array(
+            np.meshgrid(*[steps] * len(self.heuristic_fns))
+        ).T.reshape(-1, len(self.heuristic_fns))
+        # Filter points that sum to 1
+        grid_weights = grid_points[np.isclose(grid_points.sum(axis=1), 1.0)]
+        # spawn dummy weights s.t. len(weights) % no_weights == 0
+        i = 0
+        while len(grid_weights) % self.no_weights != 0:
+            grid_weights = np.vstack(
+                [grid_weights, grid_weights[i % len(grid_weights)]]
+            )
+        logger.info(f"Generated {len(grid_weights)} grid-based weight vectors.")
+        return grid_weights
