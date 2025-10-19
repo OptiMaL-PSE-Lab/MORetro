@@ -19,10 +19,40 @@ def zero_vector(length: int) -> list[float]:
     return [0.0] * length
 
 
+def compute_crowding_distance(costs: np.ndarray) -> np.ndarray:
+    """
+    Compute crowding distance for a set of cost vectors.
+
+    Parameters
+    ----------
+    costs : np.ndarray
+        2D array of shape (n_solutions, n_objectives)
+    Returns
+    -------
+    np.ndarray
+        Crowding distances for each solution.
+    """
+    n, m = costs.shape
+    crowd_dists = np.zeros(n)
+    for i in range(m):
+        sorted_idx = np.argsort(costs[:, i])
+        crowd_dists[sorted_idx[0]] = np.inf
+        crowd_dists[sorted_idx[-1]] = np.inf
+        if n > 2:
+            obj_range = costs[sorted_idx[-1], i] - costs[sorted_idx[0], i]
+            if obj_range > 0:
+                for j in range(1, n - 1):
+                    crowd_dists[sorted_idx[j]] += (
+                        costs[sorted_idx[j + 1], i] - costs[sorted_idx[j - 1], i]
+                    ) / obj_range
+    return crowd_dists
+
+
 def filter_pareto_with_dominated(
     self,
     all_solutions: PathCost,
     max_dominated: int = 5,
+    use_crowding: bool = False,
 ) -> PathCost:
     """Return Pareto-optimal solutions plus up to ``max_dominated`` dominated ones."""
     if not all_solutions:
@@ -46,8 +76,12 @@ def filter_pareto_with_dominated(
     dominated_indices = np.flatnonzero(is_dominated)
 
     if max_keep and dominated_indices.size:
-        dominated_costs = costs[dominated_indices].sum(axis=1)
-        order = np.argsort(dominated_costs)[:max_keep]
+        if use_crowding:
+            crowd_dists = compute_crowding_distance(costs[dominated_indices])
+            order = np.argsort(-crowd_dists)[:max_keep]
+        else:
+            dominated_costs = costs[dominated_indices].sum(axis=1)
+            order = np.argsort(dominated_costs)[:max_keep]
         keep_dominated = set(dominated_indices[order])
     else:
         keep_dominated = set()
@@ -334,6 +368,7 @@ class MolNode:
             self,
             all_candidate_solutions,
             50 if self.is_target else self.max_dominated_solutions,
+            use_crowding=self.is_target,
         )
 
         # Return complete filtered set if anything changed, empty dict otherwise
