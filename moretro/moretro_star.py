@@ -357,7 +357,7 @@ class MORetro:
     def plot_pareto_with_dominated(
         self,
         output_path: str | None = None,
-        figsize: tuple[int, int] = (10, 6),
+        figsize: tuple[int, int] = (12, 8),
         show_weights: bool = False,
         weight_fontsize: int = 10,
     ):
@@ -586,9 +586,9 @@ class MORetro:
                     fontsize=max(6, weight_fontsize - 2),
                 )
 
-        ax.set_xlabel("Objective 1", fontsize=12)
-        ax.set_ylabel("Objective 2", fontsize=12)
-        ax.set_zlabel("Objective 3", fontsize=12)  # type: ignore
+        ax.set_xlabel("Objective 1", fontsize=12, labelpad=10)
+        ax.set_ylabel("Objective 2", fontsize=12, labelpad=10)
+        ax.set_zlabel("Objective 3", fontsize=12, labelpad=15)  # type: ignore
         ax.set_title("Pareto Front (3D)", fontsize=14, fontweight="bold")
         ax.legend()
 
@@ -596,8 +596,11 @@ class MORetro:
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(f"{output_path}.png", dpi=300, bbox_inches="tight")
-        plt.savefig(f"{output_path}.pdf", bbox_inches="tight")
+        fig.subplots_adjust(
+            left=0.12, right=0.88, bottom=0.12, top=0.92
+        )  # Middle ground margins
+        plt.savefig(f"{output_path}.png", dpi=300)
+        plt.savefig(f"{output_path}.pdf")
         plt.close()
 
     def _compute_pareto_front_indices(self, costs: np.ndarray) -> list[int]:
@@ -664,7 +667,13 @@ class MORetro:
 
 
 if __name__ == "__main__":
+    import pandas as pd
+
     gin.parse_config_file("moretro/configs/search_config.gin")
-    target_smiles = "CC1(C)C(NC(=O)c2ccc(OCCOCCOCCOCCOCCOCCOCCOCCOCCOCCOCCOc3cc(Cl)cc(NC(=O)NCc4ccc5c(c4)CN(C4CCC(=O)NC4=O)C5=O)c3)cc2)C(C)(C)C1Oc1ccc(C#N)c(Cl)c1"
-    moretro = MORetro(target_smiles)
-    moretro.search()
+    # TODO: add argparse for input file / singular SMILES string
+
+    mol_file = pd.read_csv("pistachio_reachable_targets.txt", header=None, sep=",")
+    for target_smiles in mol_file[0].tolist():
+        search_smiles = target_smiles[2:-1]
+        moretro = MORetro(search_smiles)
+        moretro.search()
