@@ -1,5 +1,6 @@
 import logging
 import logging.config as conf
+import pickle
 import pprint
 import tempfile
 from pathlib import Path as PathLib
@@ -49,7 +50,14 @@ class MORetro:
             # TODO improve this
             logger.info("Creating plots for target and saving in ./figs directory")
             self.visualize_all_solutions()
+            # Save all solution costs as pickle
+            safe_target_name = self._safe_smiles_dirname(self.target)
+            pickle_path = f"figs/{safe_target_name}/solution_costs.pkl"
+            with open(pickle_path, "wb") as f:
+                pickle.dump(self.mo_search.search_graph.solution_cost, f)
+            logger.info(f"Saved all solution costs to {pickle_path}")
             self.plot_pareto_front()
+            self.plot_pareto_with_dominated()
             solution_summary = self.get_solution_summary()
             logger.info(
                 "Solution summary: \n" + pprint.pformat(solution_summary, indent=2)
@@ -266,7 +274,7 @@ class MORetro:
         self,
         output_path: str | None = None,
         figsize: tuple[int, int] = (10, 6),
-        show_weights: bool = True,
+        show_weights: bool = False,
         weight_fontsize: int = 10,
     ):
         """
@@ -316,6 +324,7 @@ class MORetro:
                 figsize,
                 show_weights,
                 weight_fontsize,
+                None,
             )
         elif n_objectives == 3:
             self._plot_pareto_3d(
@@ -325,10 +334,122 @@ class MORetro:
                 figsize,
                 show_weights,
                 weight_fontsize,
+                None,
             )
         else:
-            logger.warning(
-                f"Plotting not supported for {n_objectives} objectives. Plotting first 3 dimensions."
+            logger.info(
+                f"More than 3 objectives ({n_objectives}). Plotting Pareto front for first 3 dimensions."
+            )
+            reduced_costs = costs_array[:, :3]
+            pareto_indices = self._compute_pareto_front_indices(reduced_costs)
+            reduced_costs_pareto = reduced_costs[pareto_indices]
+            weights_pareto = [weights[i] for i in pareto_indices]
+            self._plot_pareto_3d(
+                reduced_costs_pareto,
+                weights_pareto,
+                output_path,
+                figsize,
+                show_weights,
+                weight_fontsize,
+                None,
+            )
+
+    def plot_pareto_with_dominated(
+        self,
+        output_path: str | None = None,
+        figsize: tuple[int, int] = (12, 8),
+        show_weights: bool = False,
+        weight_fontsize: int = 10,
+    ):
+        """
+        Plot the Pareto front with dominated solutions in the background.
+
+        Parameters
+        ----------
+        output_path : str
+            File path to save the plot (without extension). If None, will save to
+            figs/{target_smiles}/pareto_with_dominated
+        figsize : tuple[int, int]
+            Figure size (width, height)
+        show_weights : bool
+            Whether to show weight vectors as labels (only for Pareto points)
+        weight_fontsize : int
+            Font size for weight labels
+        """
+        pareto_front = self.mo_search.search_graph.pareto_front
+        solution_cost = self.mo_search.search_graph.solution_cost
+
+        if not pareto_front:
+            logger.warning("No Pareto solutions found to plot.")
+            return
+
+        # Set default output path if not provided
+        if output_path is None:
+            safe_target_name = self._safe_smiles_dirname(self.target)
+            output_path = f"figs/{safe_target_name}/pareto_with_dominated"
+
+        if not PathLib(output_path).parent.exists():
+            PathLib(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # Extract all cost vectors
+        all_cost_vectors = list(solution_cost.keys())
+        all_costs_array = np.array(all_cost_vectors)
+        n_objectives = all_costs_array.shape[1]
+
+        # Separate Pareto and dominated
+        pareto_costs = list(pareto_front.keys())
+        pareto_weights = list(pareto_front.values())
+        dominated_costs = [
+            cost for cost in all_cost_vectors if cost not in pareto_front
+        ]
+
+        if n_objectives < 2:
+            logger.warning("Need at least 2 objectives to plot Pareto front.")
+            return
+        elif n_objectives == 2:
+            pareto_array = np.array(pareto_costs)
+            dominated_array = np.array(dominated_costs) if dominated_costs else None
+            self._plot_pareto_2d(
+                pareto_array,
+                pareto_weights,
+                output_path,
+                figsize,
+                show_weights,
+                weight_fontsize,
+                dominated_array,
+            )
+        elif n_objectives == 3:
+            pareto_array = np.array(pareto_costs)
+            dominated_array = np.array(dominated_costs) if dominated_costs else None
+            self._plot_pareto_3d(
+                pareto_array,
+                pareto_weights,
+                output_path,
+                figsize,
+                show_weights,
+                weight_fontsize,
+                dominated_array,
+            )
+        else:
+            logger.info(
+                f"More than 3 objectives ({n_objectives}). Plotting first 3 dimensions with dominated solutions."
+            )
+            # Reduce all to first 3 dimensions
+            reduced_pareto = np.array(pareto_costs)[:, :3]
+            reduced_indices = self._compute_pareto_front_indices(reduced_pareto)
+            reduced_pareto = reduced_pareto[reduced_indices]
+            pareto_weights = [pareto_weights[i] for i in reduced_indices]
+            reduced_dominated = (
+                np.array(dominated_costs)[:, :3] if dominated_costs else None
+            )
+            self._plot_pareto_3d(
+                reduced_pareto,
+                pareto_weights,
+                output_path,
+                figsize,
+                show_weights,
+                weight_fontsize,
+                reduced_dominated,
             )
 
     def _plot_pareto_2d(
@@ -339,9 +460,21 @@ class MORetro:
         figsize: tuple[int, int],
         show_weights: bool,
         weight_fontsize: int,
+        dominated_costs: np.ndarray | None = None,
     ):
         """Plot 2D Pareto front."""
         plt.figure(figsize=figsize)
+
+        # Plot dominated points first (background)
+        if dominated_costs is not None:
+            plt.scatter(
+                dominated_costs[:, 0],
+                dominated_costs[:, 1],
+                c="gray",
+                s=50,
+                alpha=0.3,
+                label="Dominated Solutions",
+            )
 
         # Plot Pareto points
         plt.scatter(
@@ -404,10 +537,23 @@ class MORetro:
         figsize: tuple[int, int],
         show_weights: bool,
         weight_fontsize: int,
+        dominated_costs: np.ndarray | None = None,
     ):
         """Plot 3D Pareto front."""
         fig = plt.figure(figsize=figsize)
         ax = fig.add_subplot(111, projection="3d")
+
+        # Plot dominated points first (background)
+        if dominated_costs is not None:
+            ax.scatter(
+                dominated_costs[:, 0],
+                dominated_costs[:, 1],
+                dominated_costs[:, 2],
+                c="gray",
+                s=50,  # type: ignore
+                alpha=0.3,
+                label="Dominated Solutions",
+            )
 
         # Plot Pareto points
         ax.scatter(
@@ -440,9 +586,9 @@ class MORetro:
                     fontsize=max(6, weight_fontsize - 2),
                 )
 
-        ax.set_xlabel("Objective 1", fontsize=12)
-        ax.set_ylabel("Objective 2", fontsize=12)
-        ax.set_zlabel("Objective 3", fontsize=12)  # type: ignore
+        ax.set_xlabel("Objective 1", fontsize=12, labelpad=10)
+        ax.set_ylabel("Objective 2", fontsize=12, labelpad=10)
+        ax.set_zlabel("Objective 3", fontsize=12, labelpad=15)  # type: ignore
         ax.set_title("Pareto Front (3D)", fontsize=14, fontweight="bold")
         ax.legend()
 
@@ -450,9 +596,48 @@ class MORetro:
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(f"{output_path}.png", dpi=300, bbox_inches="tight")
-        plt.savefig(f"{output_path}.pdf", bbox_inches="tight")
+        fig.subplots_adjust(
+            left=0.12, right=0.88, bottom=0.12, top=0.92
+        )  # Middle ground margins
+        plt.savefig(f"{output_path}.png", dpi=300)
+        plt.savefig(f"{output_path}.pdf")
         plt.close()
+
+    def _compute_pareto_front_indices(self, costs: np.ndarray) -> list[int]:
+        """
+        Compute the indices of points on the Pareto front for minimization.
+
+        Parameters
+        ----------
+        costs : np.ndarray
+            Array of cost vectors, shape (n_points, n_objectives)
+
+        Returns
+        -------
+        list[int]
+            Indices of non-dominated points
+        """
+        n = len(costs)
+        is_pareto = [True] * n
+        for i in range(n):
+            if not is_pareto[i]:
+                continue
+            for j in range(n):
+                if i == j:
+                    continue
+                # Check if j dominates i (j is better or equal in all, better in at least one)
+                dominates = True
+                strictly_better = False
+                for k in range(costs.shape[1]):
+                    if costs[j, k] > costs[i, k]:
+                        dominates = False
+                        break
+                    if costs[j, k] < costs[i, k]:
+                        strictly_better = True
+                if dominates and strictly_better:
+                    is_pareto[i] = False
+                    break
+        return [i for i in range(n) if is_pareto[i]]
 
     def _safe_smiles_dirname(self, smiles: str) -> str:
         """
@@ -482,9 +667,13 @@ class MORetro:
 
 
 if __name__ == "__main__":
+    import pandas as pd
+
     gin.parse_config_file("moretro/configs/search_config.gin")
-    target_smiles = (
-        "CC(C)(CNC(=O)/C=C/c1ccc(N)nc1)Oc1cc(Cl)cc(-c2ccc(C(=O)N3CCOCC3)cc2)c1"
-    )
-    moretro = MORetro(target_smiles)
-    moretro.search()
+    # TODO: add argparse for input file / singular SMILES string
+
+    mol_file = pd.read_csv("pistachio_reachable_targets.txt", header=None, sep=",")
+    for target_smiles in mol_file[0].tolist():
+        search_smiles = target_smiles[2:-1]
+        moretro = MORetro(search_smiles)
+        moretro.search()

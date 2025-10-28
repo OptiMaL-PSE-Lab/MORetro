@@ -5,19 +5,18 @@ This test suite covers all methods in the MOGraph class with the current impleme
 Tests are designed to work with the latest version of the code.
 """
 
-import pytest
-import numpy as np
-import logging
-from unittest.mock import Mock, patch, MagicMock
-import sys
 import os
-from typing import Callable
+import sys
+from unittest.mock import patch
+
+import numpy as np
+import pytest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
+from moretro.inference.and_or_graph import AndOrGraph
 from moretro.search.mo_graph import MOGraph
 from moretro.search.node_type import MolNode, RxnNode
-from moretro.inference.and_or_graph import AndOrGraph
 
 
 class TestMOGraphInitialization:
@@ -47,6 +46,8 @@ class TestMOGraphInitialization:
             target=target,
             building_blocks=basic_building_blocks,
             heuristic_fns=simple_heuristics,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
             weight_samples=8,
             no_weights=2,
         )
@@ -69,6 +70,8 @@ class TestMOGraphInitialization:
             target=target,
             building_blocks=building_blocks,
             heuristic_fns=simple_heuristics,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert graph.target_node.is_known == True
@@ -83,6 +86,8 @@ class TestMOGraphInitialization:
             target=target,
             building_blocks=basic_building_blocks,
             heuristic_fns=simple_heuristics,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert graph.target_node.is_known == False
@@ -102,6 +107,8 @@ class TestMOGraphInitialization:
             no_weights=2,
             weight_initial="sobol",
             include_extreme=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert graph.weights.shape == (2, 2)  # (no_weights, n_objectives)
@@ -120,6 +127,8 @@ class TestMOGraphInitialization:
             no_weights=2,
             weight_initial="sobol",
             include_extreme=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert graph.weights.shape == (2, 2)  # (no_weights, n_objectives)
@@ -137,6 +146,8 @@ class TestMOGraphInitialization:
             weight_samples=16,
             no_weights=3,
             weight_initial="dirichlet",
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         assert graph.weights.shape == (3, 2)
@@ -153,6 +164,8 @@ class TestMOGraphInitialization:
                 building_blocks=basic_building_blocks,
                 heuristic_fns=simple_heuristics,
                 weight_initial="invalid",
+                pareto_objectives=2,
+                max_dominated_solutions=5,
             )
 
 
@@ -175,6 +188,8 @@ class TestWeightMethods:
             heuristic_fns=[h1, h2],
             weight_samples=16,
             no_weights=4,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         return graph
 
@@ -203,13 +218,26 @@ class TestWeightMethods:
             return 2.0
 
         # Create a known molecule
-        known_mol = MolNode(smiles="CC", heuristic_fns=[h1, h2], depth=1, is_known=True)
+        known_mol = MolNode(
+            smiles="CC",
+            heuristic_fns=[h1, h2],
+            depth=1,
+            is_known=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
         graph_with_weights.mol_to_node["CC"] = known_mol
         graph_with_weights.graph.add_node(known_mol, node_type="molecule")
 
         # Create an open molecule
         open_mol = MolNode(
-            smiles="CCO", heuristic_fns=[h1, h2], depth=1, is_known=False, is_open=True
+            smiles="CCO",
+            heuristic_fns=[h1, h2],
+            depth=1,
+            is_known=False,
+            is_open=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         graph_with_weights.mol_to_node["CCO"] = open_mol
         graph_with_weights.graph.add_node(open_mol, node_type="molecule")
@@ -250,6 +278,8 @@ class TestGraphExpansion:
             heuristic_fns=[h1, h2],
             weight_samples=8,
             no_weights=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         return graph
 
@@ -381,23 +411,39 @@ class TestValuePropagation:
             heuristic_fns=[h1, h2],
             weight_samples=8,
             no_weights=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Create some nodes manually for testing
         rxn_node = RxnNode(
             smiles="CC.CO>>CCCO",
             template="test_template",
-            reagents="catalyst",
+            reagents=["catalyst"],
             temp=298.0,
             depth=1,
             cost=[1.0, 1.5],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
-        reactant1 = MolNode(smiles="CC", heuristic_fns=[h1, h2], depth=2, is_known=True)
+        reactant1 = MolNode(
+            smiles="CC",
+            heuristic_fns=[h1, h2],
+            depth=2,
+            is_known=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
 
         reactant2 = MolNode(
-            smiles="CO", heuristic_fns=[h1, h2], depth=2, is_known=False
+            smiles="CO",
+            heuristic_fns=[h1, h2],
+            depth=2,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Add to graph
@@ -434,7 +480,13 @@ class TestValuePropagation:
 
         # Create an independent molecule node (not connected to the existing structure)
         independent_mol = MolNode(
-            smiles="CCN", heuristic_fns=[h1, h2], depth=0, is_known=False, is_open=True
+            smiles="CCN",
+            heuristic_fns=[h1, h2],
+            depth=0,
+            is_known=False,
+            is_open=True,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Add it to the graph as an independent node
@@ -512,12 +564,12 @@ class TestValuePropagation:
         assert isinstance(pareto_updated, bool)
 
 
-class TestParetoFrontManagement:
-    """Test Pareto front and solution management"""
+class TestUpdateSolutionAndPareto:
+    """Test cases for update_solution_and_pareto method"""
 
     @pytest.fixture
-    def graph_with_solutions(self):
-        """Create a graph with some existing solutions"""
+    def graph_for_solution_update(self):
+        """Create a graph suitable for testing solution updates"""
 
         def h1(smiles):
             return 1.0
@@ -531,65 +583,86 @@ class TestParetoFrontManagement:
             heuristic_fns=[h1, h2],
             weight_samples=8,
             no_weights=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
-
-        # Add some mock solutions
-        graph.target_node.success_cost = {
-            (1.0, 1.5): [graph.target_node],
-            (2.0, 1.0): [graph.target_node],
-        }
-
         return graph
 
-    def test_pareto_check_helper_new_solution(self, graph_with_solutions):
-        """Test adding a new non-dominated solution"""
-        cost_vector = (0.5, 0.8)  # Better than existing solutions
-        weight_indices = (0,)
+    def test_update_solution_and_pareto_basic_addition(self, graph_for_solution_update):
+        """Test basic addition of new solutions to solution_cost and pareto_front"""
+        graph = graph_for_solution_update
 
-        updated = graph_with_solutions.pareto_check_helper(cost_vector, weight_indices)
+        # Set up target node with some success costs
+        cost_vector = (1.0, 2.0)
+        path_nodes = ["node1", "node2"]
+        graph.target_node.success_cost[cost_vector] = path_nodes
+        graph.target_node.local_pareto[cost_vector] = True
 
-        assert updated == True
-        assert cost_vector in graph_with_solutions.pareto_front
+        # Create new solutions dict
+        new_solutions = {cost_vector: (0, 1)}
 
-    def test_pareto_check_helper_dominated_solution(self, graph_with_solutions):
-        """Test rejecting a dominated solution"""
-        # Add a solution to Pareto front first
-        graph_with_solutions.pareto_front[(1.0, 1.0)] = [[0.5, 0.5]]
+        # Call the method
+        pareto_updated = graph.update_solution_and_pareto(new_solutions)
 
-        cost_vector = (2.0, 2.0)  # Dominated by (1.0, 1.0)
-        weight_indices = (0,)
+        # Verify solution was added
+        assert cost_vector in graph.solution_cost
+        assert graph.solution_cost[cost_vector] == (
+            path_nodes,
+            (0, 1),
+        )  # local indices become global
 
-        updated = graph_with_solutions.pareto_check_helper(cost_vector, weight_indices)
+        # Verify Pareto front was updated
+        assert cost_vector in graph.pareto_front
+        assert pareto_updated == True
 
-        assert updated == False
-        assert cost_vector not in graph_with_solutions.pareto_front
+    def test_update_solution_and_pareto_removal(self, graph_for_solution_update):
+        """Test removal of solutions no longer in target_node.success_cost"""
+        graph = graph_for_solution_update
 
-    def test_pareto_check_helper_dominates_existing(self, graph_with_solutions):
-        """Test when new solution dominates existing ones"""
-        # Add inferior solution to Pareto front
-        graph_with_solutions.pareto_front[(2.0, 2.0)] = [[0.5, 0.5]]
+        # Pre-populate solution_cost and pareto_front
+        old_cost = (0.5, 1.5)
+        graph.solution_cost[old_cost] = (["old_path"], (0,))
+        graph.pareto_front[old_cost] = [[0.5, 0.5]]
 
-        cost_vector = (1.0, 1.0)  # Dominates (2.0, 2.0)
-        weight_indices = (0,)
+        # Don't add old_cost to target_node.success_cost (simulate filtering)
+        # Add a new cost
+        new_cost = (1.0, 2.0)
+        graph.target_node.success_cost[new_cost] = ["new_path"]
+        graph.target_node.local_pareto[new_cost] = True
 
-        updated = graph_with_solutions.pareto_check_helper(cost_vector, weight_indices)
+        new_solutions = {new_cost: (0,)}
 
-        assert updated == True
-        assert cost_vector in graph_with_solutions.pareto_front
-        assert (2.0, 2.0) not in graph_with_solutions.pareto_front
+        pareto_updated = graph.update_solution_and_pareto(new_solutions)
 
-    def test_update_solution_and_pareto(self, graph_with_solutions):
-        """Test update_solution_and_pareto method"""
-        new_solutions = {(1.5, 1.2): (0,), (0.8, 2.0): (1,)}
-        graph_with_solutions.target_node.success_cost.update(new_solutions)
+        # Old solution should be removed
+        assert old_cost not in graph.solution_cost
+        assert old_cost not in graph.pareto_front
 
-        pareto_updated = graph_with_solutions.update_solution_and_pareto(new_solutions)
+        # New solution should be added
+        assert new_cost in graph.solution_cost
+        assert new_cost in graph.pareto_front
+        assert pareto_updated == True
 
-        assert isinstance(pareto_updated, bool)
-        # Solutions should be added to solution_cost
-        for cost_vector in new_solutions.keys():
-            assert cost_vector in graph_with_solutions.solution_cost
-            assert cost_vector in graph_with_solutions.pareto_front
+    def test_update_solution_and_pareto_no_pareto_change(
+        self, graph_for_solution_update
+    ):
+        """Test when Pareto front doesn't change"""
+        graph = graph_for_solution_update
+
+        # Set up existing Pareto front
+        existing_cost = (1.0, 2.0)
+        graph.target_node.local_pareto[existing_cost] = True
+        graph.pareto_front[existing_cost] = [[0.5, 0.5]]
+
+        # Add the same cost again
+        graph.target_node.success_cost[existing_cost] = ["path"]
+        new_solutions = {existing_cost: (0,)}
+
+        pareto_updated = graph.update_solution_and_pareto(new_solutions)
+
+        # Pareto should not be marked as updated (same set)
+        assert pareto_updated == False
+        assert existing_cost in graph.pareto_front
 
 
 class TestIntegrationScenarios:
@@ -610,6 +683,8 @@ class TestIntegrationScenarios:
             heuristic_fns=[h1, h2],
             weight_samples=16,
             no_weights=4,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # First iteration - expand target with two predictions

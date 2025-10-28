@@ -68,7 +68,7 @@ def value_heuristic(smiles: str) -> float:
     fp = torch.tensor(fp).float().unsqueeze(0)
     value = _value_model(fp).item()
     # Scale value between 0 and 1 (assuming value is positive)
-    # value = float(min(1, value / 10))
+    value = float(min(1, value / 10))
     return value
 
 
@@ -76,6 +76,7 @@ COST_MAPPING = {
     "sustainability_cost": sustainability_heuristic,
     "scaleup_cost": price_heuristic,
     "toxicity_cost": toxicity_heuristic,
+    "convergence_cost": value_heuristic,
     "retro_star_cost": value_heuristic,
 }
 

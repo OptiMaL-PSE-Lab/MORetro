@@ -5,10 +5,13 @@ device = "cuda" # used for ML models
 # Checkpoint files
 retro_model = "models/model_retro.pt"
 retro_templates = "models/idx2template_retro.json"
-building_blocks = "models/bb_mol2idx.json"
+building_blocks = "models/origin_dict.csv"
 
 # Objectives
-objective_functions = ["economic_cost", "env_cost"]
+objective_functions = ["sustainability_cost", "scaleup_cost", "toxicity_cost", "convergence_cost"]
+pareto_objectives = 3  # Number of objectives to consider for Pareto filtering
+max_dominated_solutions = 10  # Max number of dominated solutions to keep per node
+max_pareto_solutions = 100  # Max number of Pareto solutions to reach during search
 
 # Preparation methods
 prepare_starting_mols.file_path = %building_blocks
@@ -17,18 +20,21 @@ prepare_heuristic_fns.heuristics = %objective_functions
 # Bound for known models
 MOGraph.zero_bound = True
 # Weight Selection Parameters
-MOGraph.weight_samples = 66
-MOGraph.no_weights = 4
-MOGraph.weight_initial = "sobol"
+MOGraph.weight_samples = 67
+MOGraph.no_weights = 5
+MOGraph.weight_initial = "grid"
 MOGraph.include_extreme = True
+MOGraph.pareto_objectives = %pareto_objectives
+MOGraph.max_dominated_solutions = %max_dominated_solutions
  
 # Search Parameters
-MOSearch.top_n = 50
-MOSearch.max_depth = 5
+MOSearch.top_n = 25
+MOSearch.max_depth = 12
 MOSearch.iteration_budget = 2000
 MOSearch.weight_iter_budget = 20
-MOSearch.time_budget = 600
+MOSearch.time_budget = 7200 # seconds
 MOSearch.weight_strategy = "it"
+MOSearch.max_pareto_solutions = %max_pareto_solutions
 
 # Retro model
 retro_prediction.OneStepModel.model_type = "st"

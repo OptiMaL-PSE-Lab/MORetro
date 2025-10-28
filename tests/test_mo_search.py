@@ -38,7 +38,7 @@ class TestMOSearchInitialization:
             [
                 {
                     "reactants": ["CC", "CO"],
-                    "reagents": "catalyst",
+                    "reagents": ["catalyst"],
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "[C:1][C:2].[C:3][OH:4]>>[C:1][C:2][C:3][OH:4]",
@@ -72,6 +72,8 @@ class TestMOSearchInitialization:
         gin.bind_parameter("MOGraph.no_weights", 4)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
     def test_init_basic(
         self, mock_retro_model, simple_heuristics, basic_building_blocks
@@ -113,6 +115,8 @@ class TestCanExpandRetro:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -135,6 +139,8 @@ class TestCanExpandRetro:
             heuristic_fns=[lambda x: 1.0],
             depth=2,  # Within max_depth (6)
             is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         assert node.is_open == True
 
@@ -148,6 +154,8 @@ class TestCanExpandRetro:
             heuristic_fns=[lambda x: 1.0],
             depth=6,  # At max_depth
             is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         result = search_instance.can_expand_retro(node)
@@ -156,7 +164,12 @@ class TestCanExpandRetro:
     def test_can_expand_mol_node_closed(self, search_instance):
         """Test expansion eligibility for closed MolNode"""
         node = MolNode(
-            smiles="CCO", heuristic_fns=[lambda x: 1.0], depth=2, is_known=False
+            smiles="CCO",
+            heuristic_fns=[lambda x: 1.0],
+            depth=2,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         node.is_open = False
 
@@ -168,11 +181,13 @@ class TestCanExpandRetro:
         node = RxnNode(
             smiles="CC.CO>>CCO",
             template="template",
-            reagents="catalyst",
+            reagents=["catalyst"],
             temp=298.0,
             depth=2,
             cost=[1.0, 1.5],
             weight_length=2,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         result = search_instance.can_expand_retro(node)
@@ -190,13 +205,15 @@ class TestRetroExpansion:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         mock_model.predict.return_value = [
             [
                 {
                     "reactants": ["CC", "CO"],
-                    "reagents": "catalyst",
+                    "reagents": ["catalyst"],
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "template",
@@ -226,6 +243,8 @@ class TestRetroExpansion:
             heuristic_fns=[lambda x: 1.0, lambda x: 2.0],
             depth=2,
             is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         # Add node to open_nodes set since expand_graph expects it there
@@ -248,6 +267,8 @@ class TestRetroExpansion:
             heuristic_fns=[lambda x: 1.0, lambda x: 2.0],
             depth=2,
             is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
 
         nodes_and_weights = {(node, (0,))}
@@ -272,6 +293,8 @@ class TestSpawnNewWeights:
         gin.bind_parameter("MOGraph.no_weights", 4)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -349,6 +372,8 @@ class TestChooseNextNodes:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -365,15 +390,34 @@ class TestChooseNextNodes:
         )
 
         # Add some open nodes with different total values
-        node1 = MolNode(smiles="CCC", heuristic_fns=heuristics, depth=2, is_known=False)
+        node1 = MolNode(
+            smiles="CCC",
+            heuristic_fns=heuristics,
+            depth=2,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
         node1.total_value = [1.0, 3.0]  # Min for weight 0, not min for weight 1
 
         node2 = MolNode(
-            smiles="CCCO", heuristic_fns=heuristics, depth=2, is_known=False
+            smiles="CCCO",
+            heuristic_fns=heuristics,
+            depth=2,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
         )
         node2.total_value = [2.0, 1.0]  # Not min for weight 0, min for weight 1
 
-        node3 = MolNode(smiles="CCN", heuristic_fns=heuristics, depth=2, is_known=False)
+        node3 = MolNode(
+            smiles="CCN",
+            heuristic_fns=heuristics,
+            depth=2,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
         node3.total_value = [1.5, 2.0]  # Neither min
 
         search.search_graph.open_nodes = {node1, node2, node3}
@@ -438,6 +482,8 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         # Create mock retro model with realistic predictions
         mock_model = Mock(spec=OneStepModel)
@@ -445,7 +491,7 @@ class TestRunMOSearchIntegration:
             [
                 {
                     "reactants": ["CC", "CO"],
-                    "reagents": "base",
+                    "reagents": ["base"],
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "[C:1][C:2].[C:3][OH:4]>>[C:1][C:2][C:3][OH:4]",
@@ -453,7 +499,7 @@ class TestRunMOSearchIntegration:
                 },
                 {
                     "reactants": ["C", "CCO"],
-                    "reagents": "acid",
+                    "reagents": ["acid"],
                     "temperature": 350.0,
                     "rxn_smiles": "C.CCO>>CCO",
                     "template": "[C:1].[C:2][C:3][OH:4]>>[C:2][C:3][OH:4]",
@@ -499,6 +545,8 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -527,13 +575,15 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         mock_model.predict.return_value = [
             [
                 {
                     "reactants": ["CC", "CO"],
-                    "reagents": "catalyst",
+                    "reagents": ["catalyst"],
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "template",
@@ -574,13 +624,15 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.no_weights", 2)
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 3)
 
         mock_model = Mock(spec=OneStepModel)
         mock_model.predict.return_value = [
             [
                 {
                     "reactants": ["CC", "CO"],
-                    "reagents": "catalyst",
+                    "reagents": ["catalyst"],
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "template",
@@ -648,7 +700,7 @@ class TestMOSearchRealWorldScenario:
                     mol_predictions.append(
                         {
                             "reactants": ["CC", "CO"],
-                            "reagents": "base",
+                            "reagents": ["base"],
                             "temperature": 298.0,
                             "rxn_smiles": f"CC.CO>>{smiles}",
                             "template": "[C:1][C:2].[C:3][OH:4]>>[C:1][C:2][C:3][OH:4]",
@@ -660,7 +712,7 @@ class TestMOSearchRealWorldScenario:
                     mol_predictions.append(
                         {
                             "reactants": ["C", f"C{smiles[1:]}"],
-                            "reagents": "acid",
+                            "reagents": ["acid"],
                             "temperature": 350.0,
                             "rxn_smiles": f"C.C{smiles[1:]}>>{smiles}",
                             "template": "[C:1].[C:2]>>[C:1][C:2]",

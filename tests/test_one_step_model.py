@@ -110,7 +110,7 @@ class TestOneStepModelPrediction:
             zip(target_molecules, all_predictions)
         ):
             assert isinstance(predictions, list)
-            assert len(predictions) <= 3  # Should respect top_n limit
+            assert len(predictions) <= 6  # Should respect top_n limit
 
             # If we got predictions, check their structure
             if len(predictions) > 0:

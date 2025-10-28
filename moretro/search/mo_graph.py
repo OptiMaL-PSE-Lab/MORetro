@@ -1,5 +1,6 @@
 import heapq
 import logging
+import time
 from collections.abc import Callable
 from typing import cast
 
@@ -36,8 +37,12 @@ class MOGraph:
         Canonicalized target molecule SMILES.
     building_blocks : set[str]
         Set of available starting materials.
-    heuristic_fns : list[Callable[[str], float]]W
+    heuristic_fns : list[Callable[[str], float]]
         List of objective functions.
+    pareto_objectives : int
+        Number of Pareto objectives.
+    max_dominated_solutions : int
+        Maximum number of dominated solutions to keep.
     open_nodes : set[MolNode]
         Set of nodes available for expansion.
     weights : np.ndarray
@@ -65,6 +70,8 @@ class MOGraph:
         target: str,
         building_blocks: set[str],
         heuristic_fns: list[Callable[[str], float]],
+        pareto_objectives: int,
+        max_dominated_solutions: int,
         zero_bound: bool = True,
         weight_samples: int = 64,
         no_weights: int = 5,
@@ -74,6 +81,8 @@ class MOGraph:
         self.target = Chem.CanonSmiles(target)
         self.building_blocks = building_blocks
         self.heuristic_fns = heuristic_fns
+        self.pareto_objectives = pareto_objectives
+        self.max_dominated_solutions = max_dominated_solutions
         self.zero_bound = zero_bound
         self.open_nodes: set[MolNode] = set()
         self.weight_samples = weight_samples
@@ -98,6 +107,8 @@ class MOGraph:
             heuristic_fns=heuristic_fns,
             depth=0,
             is_known=target_known,
+            pareto_objectives=self.pareto_objectives,
+            max_dominated_solutions=self.max_dominated_solutions,
             is_open=not target_known,
             zero_bound=self.zero_bound,
             is_target=True,  # Mark this node as the target
@@ -178,6 +189,8 @@ class MOGraph:
                     depth=node.depth + 1,
                     cost=costs,
                     weight_length=len(self.weights),
+                    pareto_objectives=self.pareto_objectives,
+                    max_dominated_solutions=self.max_dominated_solutions,
                 )
                 # Check for presence of cycles in the graph
                 cycle_exists = False
@@ -208,6 +221,8 @@ class MOGraph:
                             heuristic_fns=self.heuristic_fns,
                             depth=node.depth + 2,
                             is_known=reactant_known,
+                            pareto_objectives=self.pareto_objectives,
+                            max_dominated_solutions=self.max_dominated_solutions,
                             zero_bound=self.zero_bound,
                         )
                         self.mol_to_node[reactant] = reactant_node
@@ -233,9 +248,13 @@ class MOGraph:
             True if Pareto front was updated.
         """
         nodes_to_update = nodes.copy()
+        start = time.time()
         updated_nodes, new_solutions = self.uppropagation(nodes_to_update)
+        logger.info(f"Uppropagation took {time.time() - start:.2f} seconds")
         nodes_to_update.update(updated_nodes)
+        start = time.time()
         downprop_updated, _ = self.downpropagation(nodes_to_update)
+        logger.info(f"Downpropagation took {time.time() - start:.2f} seconds")
         pareto_updated = self.update_solution_and_pareto(new_solutions)
 
         return pareto_updated
@@ -284,20 +303,25 @@ class MOGraph:
                     node for node in other_nodes if isinstance(node, RxnNode)
                 )
             # Sort nodes by depth (deepest first) and then by SMILES length within each depth level
-            queue = [(-node.depth, id(node), node) for node in nodes]
-            heapq.heapify(queue)
+            queue = [(-node.depth, id(node), node, False) for node in nodes]
+            # sort the queue by depth and smiles length
+            queue.sort(key=lambda x: (x[0], len(x[2].smiles)))
             processed = set()
 
             while queue:
-                _, node_id, node = heapq.heappop(queue)
+                _, node_id, node, child_new_success = queue.pop(0)
                 processed.add(node_id)
 
                 if isinstance(node, RxnNode):
                     children = cast(list[MolNode], list(self.graph.successors(node)))
-                    parents_update = node.uppropagate(children, self.weights)
+                    parents_update, child_new_success = node.uppropagate(
+                        children, self.weights, child_new_success
+                    )
                 elif isinstance(node, MolNode):
                     children = cast(list[RxnNode], list(self.graph.successors(node)))
-                    parents_update = node.uppropagate(children, self.weights)
+                    parents_update, child_new_success = node.uppropagate(
+                        children, self.weights, child_new_success
+                    )
                 else:
                     raise TypeError(
                         f"Node {node} is not of type RxnNode or MolNode, but {type(node)}"
@@ -308,12 +332,21 @@ class MOGraph:
                     for parent in list(self.graph.predecessors(node)):
                         parent = cast(RxnNode | MolNode, parent)
                         if parent not in queue and parent not in rxn_nodes:
-                            heapq.heappush(queue, (-parent.depth, id(parent), parent))
+                            queue.append(
+                                (-parent.depth, id(parent), parent, child_new_success)
+                            )
 
             current_solution = set(self.target_node.success_cost.keys())
             new_costs = current_solution.difference(old_solutions)
             if new_costs:
                 new_solutions.update({cost: weight_indices for cost in new_costs})
+
+        # Filter new_solutions to keep only costs still present after all weight groups have been processed
+        new_solutions = {
+            cost: weight_indices
+            for cost, weight_indices in new_solutions.items()
+            if cost in self.target_node.success_cost
+        }
 
         return (updated_nodes, new_solutions)
 
@@ -374,7 +407,19 @@ class MOGraph:
         bool
             True if Pareto front was updated.
         """
-        pareto_updated = False
+        old_pareto = set(self.pareto_front.keys())
+        new_pareto = set(self.target_node.local_pareto.keys())
+        pareto_points_to_remove = old_pareto - new_pareto
+        new_pareto_points = new_pareto - old_pareto
+
+        # Sync solution_cost with current target_node.success_cost
+        # Remove solutions that are no longer in target_node (filtered out)
+        current_target_costs = set(self.target_node.success_cost.keys())
+        success_costs_to_remove = set(self.solution_cost.keys()) - current_target_costs
+        success_costs_to_remove.update(pareto_points_to_remove)
+        for cost in success_costs_to_remove:
+            self.solution_cost.pop(cost, None)
+            self.pareto_front.pop(cost, None)
 
         for cost_vector, weight_indices in new_solutions.items():
             # Get the path information from target node's success_cost
@@ -387,70 +432,21 @@ class MOGraph:
 
             # Store the new solution with path and global indices
             self.solution_cost[cost_vector] = (path_nodes, global_weight_indices)
-
             # Check if this should be added to Pareto front
-            if self.pareto_check_helper(cost_vector, weight_indices):
-                pareto_updated = True
+            if cost_vector in new_pareto:
+                weights = [
+                    self.weights[i].tolist()
+                    for i in weight_indices
+                    if i < len(self.weights)
+                ]
+                self.pareto_front[cost_vector] = weights
 
-        return pareto_updated
-
-    def pareto_check_helper(
-        self, cost_vector: CostVector, weight_indices: WeightIndices
-    ) -> bool:
-        """
-        Helper function for checking Pareto dominance and update front.
-
-        Parameters
-        ----------
-        cost_vector : CostVector
-            Cost vector to check for dominance.
-        weight_indices : WeightIndices (tuple[int, ...])
-            Weight indices associated with the cost vector.
-
-        Returns
-        -------
-        bool
-            True if Pareto front was updated.
-        """
-        should_add_to_pareto = True
-        pareto_updated = False
-        points_to_remove = []
-
-        for pareto_cost in list(self.pareto_front.keys()):
-            # Check if new solution is dominated by existing Pareto point
-            if all(
-                p <= c for p, c in zip(pareto_cost, cost_vector, strict=True)
-            ) and any(p < c for p, c in zip(pareto_cost, cost_vector, strict=True)):
-                should_add_to_pareto = False
-                break
-
-            # Check if existing Pareto point is dominated by new solution
-            elif all(
-                c <= p for c, p in zip(cost_vector, pareto_cost, strict=True)
-            ) and any(c < p for c, p in zip(cost_vector, pareto_cost, strict=True)):
-                points_to_remove.append(pareto_cost)
-
-        # Remove dominated points
-        for point in points_to_remove:
-            del self.pareto_front[point]
-            pareto_updated = True
-
-        # Add new point if not dominated
-        if should_add_to_pareto:
-            weights = [
-                self.weights[i].tolist()
-                for i in weight_indices
-                if i < len(self.weights)
-            ]
-            self.pareto_front[cost_vector] = weights
-            rounded_cost = [round(x, 2) for x in cost_vector]
-            rounded_weights = [[round(w, 2) for w in weight] for weight in weights]
+        if new_pareto_points or pareto_points_to_remove:
             logger.info(
-                f"Added new Pareto point: {rounded_cost} with weights {rounded_weights}"
+                f"Pareto front updated: {len(new_pareto_points)} points added, {len(pareto_points_to_remove)} points removed. Total: {len(self.pareto_front)} points."
             )
-            pareto_updated = True
 
-        return pareto_updated
+        return bool(new_pareto_points or pareto_points_to_remove)
 
     def reinitialize_graph(self) -> None:
         """
@@ -511,6 +507,8 @@ class MOGraph:
             )
         elif init_type == "dirichlet":
             return self.rng.dirichlet(np.ones(n_obj), size=self.weight_samples)
+        elif init_type == "grid":
+            return self._grid_initialization()
         else:
             raise ValueError(f"Unknown weight initialization type: {init_type}")
 
@@ -571,3 +569,32 @@ class MOGraph:
             f"Generated {sobol_samples_needed} Sobol samples + {n_obj} extreme points = {n_samples} total weight vectors"
         )
         return weights
+
+    def _grid_initialization(self) -> np.ndarray:
+        """
+        Generate grid-based weight vectors.
+
+        Returns
+        -------
+        np.ndarray
+            Grid-based weight vectors.
+        """
+        if len(self.heuristic_fns) <= 3:
+            # Generate grid points with a step size of 0.25 (0, 0.25, 0.5, 0.75, 1) that sum to 1
+            steps = [0.0, 0.25, 0.5, 0.75, 1.0]
+        else:
+            # Coarser steps for higher dim
+            steps = [0.0, 1 / 3, 2 / 3, 1.0]
+        grid_points = np.array(
+            np.meshgrid(*[steps] * len(self.heuristic_fns))
+        ).T.reshape(-1, len(self.heuristic_fns))
+        # Filter points that sum to 1
+        grid_weights = grid_points[np.isclose(grid_points.sum(axis=1), 1.0)]
+        # spawn dummy weights s.t. len(weights) % no_weights == 0
+        i = 0
+        while len(grid_weights) % self.no_weights != 0:
+            grid_weights = np.vstack(
+                [grid_weights, grid_weights[i % len(grid_weights)]]
+            )
+        logger.info(f"Generated {len(grid_weights)} grid-based weight vectors.")
+        return grid_weights

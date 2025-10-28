@@ -147,7 +147,7 @@ def atom_economy_cost(prediction: dict[str, Any]) -> float:
             product_atoms += mol.GetNumHeavyAtoms()
 
     atom_economy = product_atoms / reactant_atoms
-    return 1 - atom_economy
+    return max(1 - atom_economy, 0.0)
 
 
 def temperature_cost(prediction: dict[str, Any]) -> float:
@@ -283,8 +283,8 @@ def log_score(prediction: dict[str, Any]) -> float:
     """
     score = prediction["score"]
     score = -np.log(np.clip(score, 1e-3, 1.0))  # Natural log
-    # score = score / 10  # Scale down
-    # score = min(score, 1.0)  # Cap at 1.0
+    score /= 10  # Scale down
+    score = min(score, 1.0)  # Cap at 1.0
     return score
 
 
@@ -322,8 +322,9 @@ def even_split(prediction: dict[str, Any]) -> float:
 
 # Cost function mapping for easy configuration
 COST_MAPPING = {
-    "sustainability_cost": even_split,
+    "sustainability_cost": combined_sustainability,
     "scaleup_cost": scaleup_cost,
     "toxicity_cost": toxicity_cost,
+    "convergence_cost": even_split,
     "retro_star_cost": log_score,
 }
