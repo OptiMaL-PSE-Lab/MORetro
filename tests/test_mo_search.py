@@ -42,7 +42,7 @@ class TestMOSearchInitialization:
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCO",
                     "template": "[C:1][C:2].[C:3][OH:4]>>[C:1][C:2][C:3][OH:4]",
-                    "costs": [1.0, 1.5],
+                    "costs": np.array([1.0, 1.5]),
                 }
             ]
         ]
@@ -184,7 +184,7 @@ class TestCanExpandRetro:
             reagents=["catalyst"],
             temp=298.0,
             depth=2,
-            cost=[1.0, 1.5],
+            cost=np.array([1.0, 1.5]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -428,7 +428,7 @@ class TestChooseNextNodes:
         """Test basic node selection functionality"""
         search, node1, node2, node3 = search_with_nodes
 
-        selected = search.choose_next_nodes()
+        selected, _ = search.choose_next_nodes()
 
         assert isinstance(selected, set)
         assert len(selected) > 0
@@ -443,7 +443,7 @@ class TestChooseNextNodes:
         """Test that nodes with minimum values are selected"""
         search, node1, node2, node3 = search_with_nodes
 
-        selected = search.choose_next_nodes()
+        selected, _ = search.choose_next_nodes()
 
         # Convert to dict for easier checking
         selected_dict = {
@@ -463,7 +463,7 @@ class TestChooseNextNodes:
         for node in [node1, node2, node3]:
             node.total_value = [1.0, 1.0]
 
-        selected = search.choose_next_nodes()
+        selected, _ = search.choose_next_nodes()
 
         # Should still return valid selections
         assert len(selected) > 0
@@ -783,6 +783,146 @@ class TestMOSearchRealWorldScenario:
         except Exception as e:
             pytest.fail(f"MOSearch integration test failed: {e}")
 
+class TestRemoveDominatedNodes:
+    """Test cases for remove_dominated_nodes method"""
 
-if __name__ == "__main__":
-    pytest.main([__file__])
+    @pytest.fixture
+    def search_instance(self):
+        """Create MOSearch instance for testing"""
+        gin.clear_config()
+        gin.bind_parameter("MOGraph.weight_samples", 8)
+        gin.bind_parameter("MOGraph.no_weights", 2)
+        gin.bind_parameter("MOGraph.weight_initial", "sobol")
+        gin.bind_parameter("MOGraph.include_extreme", False)
+        gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
+
+        mock_model = Mock(spec=OneStepModel)
+        heuristics = [lambda x: 1.0, lambda x: 2.0]
+
+        return MOSearch(
+            target="CCO",
+            retro_model=mock_model,
+            building_blocks={"CC", "CO"},
+            heuristic_fns=heuristics,
+            top_n=5,
+            max_depth=3,
+            iteration_budget=50,
+            weight_iter_budget=10,
+        )
+
+    def test_remove_dominated_nodes_basic(self, search_instance):
+        """Test basic removal of dominated nodes"""
+        # Setup Pareto front in search graph
+        # Pareto front has points: (1.0, 1.0), (0.5, 2.0)
+        search_instance.search_graph.pareto_front = {
+            (1.0, 1.0): [[0.5, 0.5]],
+            (0.5, 2.0): [[0.5, 0.5]],
+        }
+        # Mock pareto_front_costs property if it exists, or just rely on implementation details
+        # The implementation uses graph.pareto_front_costs which seems to be a property or attribute
+        # Let's mock it on the search_graph instance
+        search_instance.search_graph.pareto_front_costs = np.array(
+            [[1.0, 1.0], [0.5, 2.0]]
+        )
+
+        # Create nodes
+        # Node 1: (2.0, 2.0) - Dominated by (1.0, 1.0)
+        node1 = MolNode(
+            smiles="N1",
+            heuristic_fns=[],
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
+        node1.best_total_value = np.array([2.0, 2.0])
+
+        # Node 2: (0.4, 1.5) - Not dominated (better in obj 1 than both pareto points)
+        node2 = MolNode(
+            smiles="N2",
+            heuristic_fns=[],
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
+        node2.best_total_value = np.array([0.4, 1.5])
+
+        # Node 3: (0.8, 0.8) - Not dominated (better than (1.0, 1.0))
+        node3 = MolNode(
+            smiles="N3",
+            heuristic_fns=[],
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
+        node3.best_total_value = np.array([0.8, 0.8])
+
+        open_nodes = [node1, node2, node3]
+
+        # Enable exclude_dominated_nodes
+        search_instance.exclude_dominated_nodes = True
+
+        filtered_nodes, stop_search = search_instance.remove_dominated_nodes(open_nodes)
+
+        assert stop_search is False
+        assert len(filtered_nodes) == 2
+        assert node1 not in filtered_nodes
+        assert node2 in filtered_nodes
+        assert node3 in filtered_nodes
+        assert node1.is_dominated is True
+        assert node2.is_dominated is False
+        assert node3.is_dominated is False
+
+    def test_remove_dominated_nodes_stop_on_full_pareto(self, search_instance):
+        """Test stopping search when all nodes are dominated and stop_on_full_pareto is True"""
+        search_instance.search_graph.pareto_front_costs = np.array([[1.0, 1.0]])
+
+        # Node 1: (2.0, 2.0) - Dominated
+        node1 = MolNode(
+            smiles="N1",
+            heuristic_fns=[],
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
+        node1.best_total_value = np.array([2.0, 2.0])
+
+        open_nodes = [node1]
+
+        search_instance.stop_on_full_pareto = True
+        search_instance.exclude_dominated_nodes = False  # Even if false, stop_on_full_pareto logic checks dominance
+
+        filtered_nodes, stop_search = search_instance.remove_dominated_nodes(open_nodes)
+
+        assert stop_search is True
+        assert filtered_nodes is None
+
+    def test_remove_dominated_nodes_no_exclusion(self, search_instance):
+        """Test that nodes are not removed if exclude_dominated_nodes is False"""
+        search_instance.search_graph.pareto_front_costs = np.array([[1.0, 1.0]])
+
+        # Node 1: (2.0, 2.0) - Dominated
+        node1 = MolNode(
+            smiles="N1",
+            heuristic_fns=[],
+            depth=1,
+            is_known=False,
+            pareto_objectives=2,
+            max_dominated_solutions=5,
+        )
+        node1.best_total_value = np.array([2.0, 2.0])
+
+        open_nodes = [node1]
+
+        search_instance.exclude_dominated_nodes = False
+        search_instance.stop_on_full_pareto = False
+
+        filtered_nodes, stop_search = search_instance.remove_dominated_nodes(open_nodes)
+
+        assert stop_search is False
+        assert len(filtered_nodes) == 1
+        assert filtered_nodes[0] == node1

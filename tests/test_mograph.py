@@ -296,7 +296,7 @@ class TestGraphExpansion:
                     "temperature": 298.0,
                     "rxn_smiles": "CCO.C>>CCCO",
                     "template": "[CH3:1][CH2:2][OH:3].[CH4:4]>>[CH3:1][CH2:2][CH2:4][OH:3]",
-                    "costs": [1.0, 1.5],
+                    "costs": np.array([1.0, 1.5]),
                 }
             ]
         }
@@ -321,7 +321,7 @@ class TestGraphExpansion:
                     "temperature": 298.0,
                     "rxn_smiles": "CC.CO>>CCCO",
                     "template": "[CH3:1][CH3:2].[CH3:3][OH:4]>>[CH3:1][CH2:2][CH2:3][OH:4]",
-                    "costs": [0.5, 1.0],
+                    "costs": np.array([0.5, 1.0]),
                 }
             ]
         }
@@ -351,7 +351,7 @@ class TestGraphExpansion:
                         "temperature": 298.0,
                         "rxn_smiles": "CCCO.C>>CCCO",
                         "template": "[CH3:1]>>[CH3:1]",
-                        "costs": [1.0, 1.0],
+                        "costs": np.array([1.0, 1.0]),
                     }
                 ]
             }
@@ -373,7 +373,7 @@ class TestGraphExpansion:
                     "temperature": 298.0,
                     "rxn_smiles": "CCO.C>>CCCO",
                     "template": "template1",
-                    "costs": [1.0, 1.5],
+                    "costs": np.array([1.0, 1.5]),
                 },
                 {
                     "reactants": ["CC", "CO"],
@@ -381,7 +381,7 @@ class TestGraphExpansion:
                     "temperature": 323.0,
                     "rxn_smiles": "CC.CO>>CCCO",
                     "template": "template2",
-                    "costs": [0.8, 1.2],
+                    "costs": np.array([0.8, 1.2]),
                 },
             ]
         }
@@ -422,7 +422,7 @@ class TestValuePropagation:
             reagents=["catalyst"],
             temp=298.0,
             depth=1,
-            cost=[1.0, 1.5],
+            cost=np.array([1.0, 1.5]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -546,6 +546,8 @@ class TestValuePropagation:
         graph, rxn_node, reactant1, reactant2 = graph_with_structure
         graph.target_node.rxn_no = np.random.randn(2).tolist()
         graph.target_node.total_value = np.random.randn(2).tolist()
+        graph.target_node.best_rxn_no = np.random.randn(2).tolist()
+        graph.target_node.best_total_value = np.random.randn(2).tolist()
 
         nodes_and_weights = {(graph.target_node, (0,)), (rxn_node, (0,))}
 
@@ -699,7 +701,7 @@ class TestIntegrationScenarios:
                     "temperature": 298.0,
                     "rxn_smiles": "CCCO.C>>CCCCO",
                     "template": "template1",
-                    "costs": [1.2, 1.8],
+                    "costs": np.array([1.2, 1.8]),
                 },
                 {
                     "reactants": ["CCC", "CO"],
@@ -707,7 +709,7 @@ class TestIntegrationScenarios:
                     "temperature": 323.0,
                     "rxn_smiles": "CCC.CO>>CCCCO",
                     "template": "template2",
-                    "costs": [1.5, 1.4],
+                    "costs": np.array([1.5, 1.4]),
                 },
             ]
         }
@@ -752,7 +754,7 @@ class TestIntegrationScenarios:
                         "temperature": 310.0,
                         "rxn_smiles": "CC.CO>>CCCO",
                         "template": "template3",
-                        "costs": [0.8, 1.2],
+                        "costs": np.array([0.8, 1.2]),
                     },
                     {
                         "reactants": ["CCO", "C"],
@@ -760,7 +762,7 @@ class TestIntegrationScenarios:
                         "temperature": 298.0,
                         "rxn_smiles": "CCO.C>>CCCO",
                         "template": "template4",
-                        "costs": [1.0, 1.1],
+                        "costs": np.array([1.0, 1.1]),
                     },
                 ]
             elif "CCC" in node.smiles:
@@ -771,7 +773,7 @@ class TestIntegrationScenarios:
                         "temperature": 315.0,
                         "rxn_smiles": "CC.C>>CCC",
                         "template": "template5",
-                        "costs": [0.6, 0.9],
+                        "costs": np.array([0.6, 0.9]),
                     },
                     {
                         "reactants": ["C", "CC"],
@@ -779,7 +781,7 @@ class TestIntegrationScenarios:
                         "temperature": 305.0,
                         "rxn_smiles": "C.CC>>CCC",
                         "template": "template6",
-                        "costs": [0.7, 0.8],
+                        "costs": np.array([0.7, 0.8]),
                     },
                 ]
 

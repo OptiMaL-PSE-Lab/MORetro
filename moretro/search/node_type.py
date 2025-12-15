@@ -7,7 +7,7 @@ from itertools import product
 
 import numpy as np
 
-type Vector = list[float]
+type Vector = np.ndarray
 type Path = list[MolNode | RxnNode]
 type PathCost = dict[tuple[float, ...], Path]
 
@@ -15,8 +15,8 @@ type PathCost = dict[tuple[float, ...], Path]
 logger = logging.getLogger(__name__)
 
 
-def zero_vector(length: int) -> list[float]:
-    return [0.0] * length
+def zero_vector(length: int) -> np.ndarray:
+    return np.zeros(length)
 
 
 def compute_crowding_distance(costs: np.ndarray) -> np.ndarray:
@@ -121,10 +121,14 @@ class MolNode:
         Number of Pareto objectives.
     max_dominated_solutions : int
         Maximum number of dominated solutions to keep.
-    rxn_no : Vector (list[float])
+    rxn_no : Vector (np.ndarray)
         Reaction number vector containing scalar values for each weight group.
-    _total_value : Vector (list[float])
+    _total_value : Vector (np.ndarray)
         Total value vector propagated from parent nodes, one value for each weight group.
+    best_rxn_no : Vector (np.ndarray)
+        Best cost vector for each Pareto objective, tracking minimum costs along synthesis paths.
+    best_total_value : Vector (np.ndarray)
+        Best total value vector propagated backward, one value for each Pareto objective.
     success : bool
         Whether this node has at least one successful synthesis path to building blocks.
     success_cost : PathCost
@@ -132,6 +136,8 @@ class MolNode:
         Key: tuple of objective costs, Value: list of nodes in the path.
     is_open : bool
         Whether this node is available for expansion in the search.
+    is_dominated: bool
+        Whether this node is currently dominated by any point in the Pareto front.
     zero_bound : bool
         Whether to use zero lower bounds for known molecules. If True, known molecules
         get zero cost estimates.
@@ -142,9 +148,9 @@ class MolNode:
     ------------------------------------
     h_length : int
         Length of heuristic functions list.
-    value_estimates : Vector (list[float])
+    value_estimates : Vector (np.ndarray)
         Heuristic-based estimates for each objective.
-    success_cost_estimate : Vector (list[float])
+    success_cost_estimate : Vector (np.ndarray)
         Cost estimate for successful synthesis (only set for known molecules).
     local_pareto : PathCost
         Local Pareto front of solutions.
@@ -158,11 +164,18 @@ class MolNode:
     is_known: bool
     pareto_objectives: int
     max_dominated_solutions: int
-    rxn_no: Vector = field(default_factory=list)
-    _total_value: Vector = field(default_factory=list)
+    rxn_no: Vector = field(default_factory=lambda: np.array([]))
+    _total_value: Vector = field(default_factory=lambda: np.array([]))
+    best_rxn_no: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # for domination checking only
+    best_total_value: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # for domination checking only
     success: bool = False
     success_cost: PathCost = field(default_factory=dict)
     is_open: bool = True
+    is_dominated: bool = False
     zero_bound: bool = True
     is_target: bool = False  # whether this is the target molecule
 
@@ -181,11 +194,11 @@ class MolNode:
                     : self.pareto_objectives
                 ]
 
-    def _calculate_heuristics(self) -> list[float]:
+    def _calculate_heuristics(self) -> np.ndarray:
         objectives = []
         for heuristic in self.heuristic_fns:
             objectives.append(heuristic(self.smiles))
-        return objectives
+        return np.array(objectives)
 
     def objectives_to_scalar(self, weights: np.ndarray) -> np.ndarray:
         """
@@ -237,26 +250,36 @@ class MolNode:
                 new_rxn_no = self.objectives_to_scalar(weights)
             success = True
             new_success_cost = {tuple(self.success_cost_estimate): [self]}
+            best_rxn_no = np.zeros(
+                self.pareto_objectives
+            )  # should have shape of objectives
         elif self.is_open:  # tip node of tree which is not a building block
             new_rxn_no = self.objectives_to_scalar(weights)
+            best_rxn_no = self.value_estimates[: self.pareto_objectives]
         elif len(children) > 0:  # interior node with children
             children_rxn_no = np.array(
                 [child.rxn_no for child in children]
+            )  # shape: (n_children, n_weights)
+            new_rxn_no = np.min(children_rxn_no, axis=0)  # shape: (n_weights,)
+            best_rxn_no = np.array(
+                [child.best_rxn_no for child in children]
             )  # shape: (n_children, n_objectives)
-            new_rxn_no = np.min(children_rxn_no, axis=0)
+            best_rxn_no = np.min(best_rxn_no, axis=0)
             success = any(child.success for child in children)
             if success:
                 new_success_cost = self.track_success_cost(children)
         else:  # no valid expansion
             new_rxn_no = np.full(weights.shape[0], np.inf)
+            best_rxn_no = np.full(self.pareto_objectives, np.inf)
 
-        new_rxn_no_list = new_rxn_no.tolist()  # convert to list for comparison
         if (
-            self.rxn_no != new_rxn_no_list
+            not np.array_equal(self.rxn_no, new_rxn_no)
+            or not np.array_equal(self.best_rxn_no, best_rxn_no)
             or new_success_cost
             or self.success != success
         ):  # if any of the values changed, update the node and return bool True
-            self.rxn_no = new_rxn_no_list
+            self.rxn_no = new_rxn_no
+            self.best_rxn_no = best_rxn_no
             self.success = success
             # Replace entire success_cost with filtered solutions (prevents unbounded growth)
             if new_success_cost:
@@ -283,12 +306,19 @@ class MolNode:
         """
         if len(parents) == 0:  # product node with no parents
             new_total_value = self.rxn_no
+            best_total_value = self.best_rxn_no
         else:
             new_total_value = np.min(
                 np.array([p.total_value for p in parents]), axis=0
-            ).tolist()  # the total value is the minmum of the parents' total values
-        if self.total_value != new_total_value:
+            )  # the total value is the minimum of the parents' total values
+            best_total_value = np.min(
+                np.array([p.best_total_value for p in parents]), axis=0
+            )
+        if not np.array_equal(self.total_value, new_total_value) or not np.array_equal(
+            self.best_total_value, best_total_value
+        ):
             self.total_value = new_total_value
+            self.best_total_value = best_total_value
             return True
         return False
 
@@ -382,10 +412,12 @@ class MolNode:
         return self._total_value
 
     @total_value.setter
-    def total_value(self, value: Vector) -> None:
+    def total_value(self, value) -> None:
+        if isinstance(value, list):
+            value = np.array(value)
         condition_check = not self.is_target and not self.success
         if (
-            value and sum(np.array(value) == 0) == len(value) and condition_check
+            value.size > 0 and np.all(value == 0) and condition_check
         ):  # Check if all values are zero
             logger.warning(
                 f"Total value of node {self.smiles} is all zeros, this is not expected."
@@ -424,10 +456,14 @@ class RxnNode:
         Number of Pareto objectives.
     max_dominated_solutions : int
         Maximum number of dominated solutions to keep.
-    total_value : Vector
-        Total value vector, one for each group of weights (default: empty list).
-    rxn_no : Vector
-        Reaction number vector, one for each group of weights (default: empty list).
+    total_value : Vector (np.ndarray)
+        Total value vector, one for each group of weights (default: empty array).
+    rxn_no : Vector (np.ndarray)
+        Reaction number vector, one for each group of weights (default: empty array).
+    best_rxn_no : Vector (np.ndarray)
+        Best cost vector for each Pareto objective, tracking minimum costs along synthesis paths.
+    best_total_value : Vector (np.ndarray)
+        Best total value vector propagated backward, one value for each Pareto objective.
     success_cost : PathCost
         Dictionary mapping cost vectors to synthesis paths (default: empty dict).
     success : bool
@@ -435,7 +471,7 @@ class RxnNode:
 
     Attributes computed in __post_init__:
     ------------------------------------
-    true_cost : Vector
+    true_cost : Vector (np.ndarray)
         Copy of original cost before adding delta offset.
     _delta_offset : float
         Small offset added to costs to ensure uniqueness.
@@ -450,14 +486,24 @@ class RxnNode:
     weight_length: int
     pareto_objectives: int
     max_dominated_solutions: int
-    total_value: Vector = field(default_factory=list)  # one for each group of weight
-    rxn_no: Vector = field(default_factory=list)  # one for each group of weights
+    total_value: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # one for each group of weight
+    rxn_no: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # one for each group of weights
+    best_rxn_no: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # for domination checking only
+    best_total_value: Vector = field(
+        default_factory=lambda: np.array([])
+    )  # for domination checking only
     success_cost: PathCost = field(default_factory=dict)
     success: bool = False
     _delta_offset: float = field(default=0.0, init=False)
 
     def __post_init__(self) -> None:
-        if not self.cost:
+        if not self.cost.any():
             logger.error("Reaction cost cannot be empty!")
             raise ValueError("Reaction cost must be provided")
 
@@ -465,8 +511,11 @@ class RxnNode:
         normalized_hash = (abs(reaction_hash) % 100) + 1
         self._delta_offset = normalized_hash * 1e-15
         self.true_cost = self.cost.copy()
-        self.cost = [c + self._delta_offset for c in self.cost]  # ensure unique costs
+        self.cost = np.array(
+            [c + self._delta_offset for c in self.cost]
+        )  # ensure unique costs
         self.rxn_no = zero_vector(self.weight_length)
+        self.best_rxn_no = zero_vector(self.pareto_objectives)
         self.total_value = zero_vector(self.weight_length)
 
     def uppropagate(
@@ -499,26 +548,31 @@ class RxnNode:
             raise ValueError("No children provided for RxnNode")
         success = all(child.success for child in children)
         new_rxn_no = np.zeros(len(self.rxn_no))
+        new_best_rxn_no = np.zeros(self.pareto_objectives)
         new_success_cost = dict()
 
         # Sum up costs from all children
         for child in children:
             assert len(child.rxn_no) != 0, "Rxn_no for MolNode should not be empty"
             new_rxn_no += np.array(child.rxn_no)
+            new_best_rxn_no += np.array(child.best_rxn_no)
         # add reaction cost with each weight combination
         rxn_cost = weights @ self.true_cost
         new_rxn_no += rxn_cost
+        best_cost = np.array(self.true_cost)[: self.pareto_objectives]
+        new_best_rxn_no += np.array(best_cost)
 
         if success:
             new_success_cost = self.track_success_cost(children)
 
-        new_rxn_no_list = new_rxn_no.tolist()
         if (
-            self.rxn_no != new_rxn_no_list
+            not np.array_equal(self.rxn_no, new_rxn_no)
+            or not np.array_equal(self.best_rxn_no, new_best_rxn_no)
             or new_success_cost
             or self.success != success
         ):
-            self.rxn_no = new_rxn_no_list
+            self.rxn_no = new_rxn_no
+            self.best_rxn_no = new_best_rxn_no
             self.success = success
             # Replace entire success_cost with filtered solutions (prevents unbounded growth)
             if new_success_cost:
@@ -544,17 +598,19 @@ class RxnNode:
             True if total_value was updated.
         """
         # check if parent molecule is infeasible
-        if parent.rxn_no == [float("inf")] * len(self.rxn_no):
-            new_total_value = [float("inf")] * len(self.rxn_no)
+        if np.all(parent.rxn_no == float("inf")):
+            new_total_value = np.full(len(self.rxn_no), np.inf)
+            new_best_total_value = np.full(self.pareto_objectives, np.inf)
         else:
-            new_total_value = (
-                np.array(self.rxn_no)
-                - np.array(parent.rxn_no)
-                + np.array(parent.total_value)
+            new_total_value = self.rxn_no - parent.rxn_no + parent.total_value
+            new_best_total_value = (
+                self.best_rxn_no - parent.best_rxn_no + parent.best_total_value
             )
-            new_total_value = new_total_value.tolist()
-        if self.total_value != new_total_value:
+        if not np.array_equal(self.total_value, new_total_value) or not np.array_equal(
+            self.best_total_value, new_best_total_value
+        ):
             self.total_value = new_total_value
+            self.best_total_value = new_best_total_value
             return True
         return False
 

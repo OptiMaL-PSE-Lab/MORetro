@@ -12,8 +12,6 @@ from moretro.search.mo_graph import MOGraph
 from moretro.search.node_type import MolNode
 from moretro.utils.typing_hints import MolNodeAndWeights, Nodes
 
-# NOTE: For now, no dominance checks are implemented due to interdependent nature of problem
-
 logger = logging.getLogger(__name__)
 
 
@@ -48,6 +46,7 @@ class MOSearch:
         Weight resampling strategy ("it" for iterative, "obj" for objective-based).
     max_pareto_solutions : int, default 250
         Maximum number of Pareto solutions to find before stopping search.
+    stop_on_full_pareto : bool, default False
     """
 
     def __init__(
@@ -63,6 +62,8 @@ class MOSearch:
         time_budget: float = 0.0,
         weight_strategy: str = "it",  # "it" for iterative, "obj" for objective
         max_pareto_solutions: int = 250,
+        stop_on_full_pareto: bool = False,
+        exclude_dominated_nodes: bool = False,
     ):
         self.max_depth = 2 * max_depth
         self.retro_model = retro_model
@@ -83,6 +84,8 @@ class MOSearch:
         self.iteration_budget = iteration_budget
         self.time_budget = time_budget
         self.max_pareto_solutions = max_pareto_solutions
+        self.stop_on_full_pareto = stop_on_full_pareto
+        self.exclude_dominated_nodes = exclude_dominated_nodes
         self.weights_open: list[bool] = [True] * self.search_graph.no_weights
 
     def can_expand_retro(self, node: Nodes) -> bool:
@@ -107,6 +110,54 @@ class MOSearch:
         return (
             isinstance(node, MolNode) and node.depth < self.max_depth and node.is_open
         )
+
+    def check_node_dominance_pareto(self, node: MolNode) -> bool:
+        """
+        Returns True if a node is dominated by any point in the current Pareto front.
+        """
+        graph = self.search_graph
+        best_value = np.round(np.array(node.best_total_value), 3)
+        graph_pareto_front = graph.pareto_front_costs
+        if graph_pareto_front.size == 0:
+            return False
+        # A Pareto vector dominates best_value if it is <= in all objectives and
+        # strictly < in at least one objective.
+        dominated = np.all(graph_pareto_front <= best_value[None, :], axis=1) & np.any(
+            graph_pareto_front < best_value[None, :], axis=1
+        )
+        return bool(np.any(dominated))
+
+    def remove_dominated_nodes(
+        self, open_nodes: list[MolNode]
+    ) -> tuple[list[MolNode] | None, bool]:
+        """
+        Remove dominated nodes from the list of open nodes based on the current Pareto front.
+        """
+        if self.exclude_dominated_nodes or self.stop_on_full_pareto:
+            open_nodes = [
+                node for node in open_nodes if not node.is_dominated
+            ]  # do not check dominance again
+            all_dominated = True
+            for node in open_nodes:
+                dominated = self.check_node_dominance_pareto(node)
+                all_dominated &= dominated
+                if self.exclude_dominated_nodes:
+                    node.is_dominated = dominated
+            if all_dominated and self.stop_on_full_pareto:
+                logger.info(
+                    "All open nodes are dominated by current Pareto front. Stopping search."
+                )
+                return None, True
+            if self.exclude_dominated_nodes:
+                open_nodes = [
+                    node for node in open_nodes if not node.is_dominated
+                ]  # exclude dominated nodes
+        if not open_nodes:
+            logger.info(
+                "No open nodes available for expansion after dominance check - full Pareto front found. Stopping search."
+            )
+            return None, True
+        return open_nodes, False
 
     def retro_expansion(self, nodes_and_weights: MolNodeAndWeights) -> bool:
         """
@@ -210,9 +261,10 @@ class MOSearch:
             return 0
         return num_iter
 
-    def choose_next_nodes(self) -> MolNodeAndWeights:
+    def choose_next_nodes(self) -> tuple[MolNodeAndWeights, bool]:
         """
         Select nodes to expand next based on current weight preferences.
+        Checks for dominance of open nodes if specified.
 
         For each active weight vector, identifies the most promising nodes
         (those with minimum total values) and groups weights that prefer
@@ -223,10 +275,16 @@ class MOSearch:
         MolNodeAndWeights
             Set of tuples containing selected nodes and their corresponding
             weight indices for expansion.
+        bool
+            True if search should stop (full Pareto front found), False otherwise.
         """
 
         # Convert set to sorted list for consistent ordering
         open_nodes = sorted(list(self.search_graph.open_nodes), key=lambda x: x.smiles)
+        open_nodes, stop_search = self.remove_dominated_nodes(open_nodes)
+        if stop_search or not open_nodes:
+            return set(), True
+
         open_nodes_values = []
         for node in open_nodes:
             open_nodes_values.append(node.total_value)
@@ -266,7 +324,7 @@ class MOSearch:
                 if i >= len(dims):
                     break
                 i += 1
-        return nodes_and_weights_to_expand
+        return nodes_and_weights_to_expand, False
 
     def run_mo_search(self) -> None:
         """
@@ -281,6 +339,7 @@ class MOSearch:
 
         The search terminates when the iteration budget is reached, time budget
         is exceeded, no open nodes remain, or all weight vectors are exhausted.
+        One can also set a flag that the search terminates as soon as the full Pareto front is found.
         """
         logger.info("Starting multi-objective search process...")
         iter_counter = 1
@@ -290,23 +349,29 @@ class MOSearch:
         while iter_counter < self.iteration_budget and elapsed_time < self.time_budget:
             torch.cuda.empty_cache()
             weight_iter = self.spawn_new_weights(weight_iter, early_resampling=False)
+
+            # Checking for termination criteria (max pareto solutions)
             if len(self.search_graph.pareto_front) >= self.max_pareto_solutions:
                 logger.info(
                     f"Reached {self.max_pareto_solutions} Pareto solutions. Stopping search."
                 )
                 break
+            # Checking for termination criteria (no open nodes or weights left)
             break_condition = not self.search_graph.open_nodes or weight_iter < 0
             if break_condition:
                 if not self.search_graph.open_nodes:
-                    logger.info("No open nodes left to expand.")
+                    logger.info("No open nodes left to expand. Stopping search.")
                 else:
                     logger.info(
-                        "All weights have been sampled, no more weights to explore."
+                        "All weights have been sampled, no more weights to explore. Stopping search."
                     )
-                logger.info("Search process completed.")
                 break
 
-            nodes_and_weights_to_expand = self.choose_next_nodes()
+            # Not terminated yet, continue with steps of search
+            nodes_and_weights_to_expand, stop_search = self.choose_next_nodes()
+
+            if stop_search:
+                break
 
             early_resampling = self.retro_expansion(nodes_and_weights_to_expand)
             if early_resampling:

@@ -86,8 +86,11 @@ class TestMolNode:
         assert node.is_open
         assert not node.success
         assert node.h_length == 2
-        assert node.value_estimates == [1.0, 2.0]
+        np.testing.assert_array_equal(node.value_estimates, np.array([1.0, 2.0]))
         assert node.success_cost == {}
+        # Check best_rxn_no and best_total_value initialization
+        np.testing.assert_array_equal(node.best_rxn_no, np.array([]))
+        np.testing.assert_array_equal(node.best_total_value, np.array([]))
 
     def test_known_molecule_initialization(self, heuristic_fns):
         """Test initialization of known building block"""
@@ -102,7 +105,9 @@ class TestMolNode:
         )
 
         assert not node.is_open  # Known molecules are not open for expansion
-        assert node.success_cost_estimate == [0.0, 0.0]  # Zero bound
+        np.testing.assert_array_equal(
+            node.success_cost_estimate, np.array([0.0, 0.0])
+        )  # Zero bound
 
     def test_known_molecule_no_zero_bound(self, heuristic_fns):
         """Test known molecule without zero bound"""
@@ -116,7 +121,9 @@ class TestMolNode:
             max_dominated_solutions=5,
         )
 
-        assert node.success_cost_estimate == [1.0, 2.0]  # Heuristic values
+        np.testing.assert_array_equal(
+            node.success_cost_estimate, np.array([1.0, 2.0])
+        )  # Heuristic values
 
     def test_objectives_to_scalar(self, simple_mol_node):
         """Test conversion of objectives to scalar values"""
@@ -133,7 +140,12 @@ class TestMolNode:
 
         assert result  # Should return True for changes
         assert known_mol_node.success
-        assert known_mol_node.rxn_no == [0.0, 0.0]  # Zero bound
+        np.testing.assert_array_equal(
+            known_mol_node.rxn_no, np.array([0.0, 0.0])
+        )  # Zero bound
+        np.testing.assert_array_equal(
+            known_mol_node.best_rxn_no, np.array([0.0, 0.0])
+        )  # Zero bound for best costs
         assert (
             tuple(known_mol_node.success_cost_estimate) in known_mol_node.success_cost
         )
@@ -148,18 +160,22 @@ class TestMolNode:
         assert (
             not simple_mol_node.success
         )  # Open node without children is not successful
-        assert simple_mol_node.rxn_no == [1.5]  # 0.5*1.0 + 0.5*2.0
+        np.testing.assert_array_equal(
+            simple_mol_node.rxn_no, np.array([1.5])
+        )  # 0.5*1.0 + 0.5*2.0
 
     def test_uppropagate_with_children(self, simple_mol_node):
         """Test uppropagation with successful children"""
         # Create mock children
         child1 = Mock(spec=RxnNode)
-        child1.rxn_no = [2.0, 3.0]
+        child1.rxn_no = np.array([2.0, 3.0])
+        child1.best_rxn_no = np.array([1.5, 2.5])  # Add best_rxn_no to mock
         child1.success = True
         child1.success_cost = {(1.0, 1.5): ["path1"]}
 
         child2 = Mock(spec=RxnNode)
-        child2.rxn_no = [1.5, 4.0]
+        child2.rxn_no = np.array([1.5, 4.0])
+        child2.best_rxn_no = np.array([1.0, 3.0])  # Add best_rxn_no to mock
         child2.success = False
         child2.success_cost = {}
 
@@ -170,29 +186,45 @@ class TestMolNode:
 
         assert result
         assert simple_mol_node.success  # At least one child is successful
-        assert simple_mol_node.rxn_no == [1.5, 3.0]  # Min of children
+        np.testing.assert_array_equal(
+            simple_mol_node.rxn_no, np.array([1.5, 3.0])
+        )  # Min of children
+        np.testing.assert_array_equal(simple_mol_node.best_rxn_no, np.array([1.0, 2.5]))
 
     def test_downpropagate_no_parents(self, simple_mol_node):
         """Test downpropagation for node with no parents"""
-        simple_mol_node.rxn_no = [2.0, 3.0]
+        simple_mol_node.rxn_no = np.array([2.0, 3.0])
+        simple_mol_node.best_rxn_no = np.array([1.5, 2.5])
 
         result = simple_mol_node.downpropagate([])
 
         assert result
-        assert simple_mol_node.total_value == [2.0, 3.0]
+        np.testing.assert_array_equal(simple_mol_node.total_value, np.array([2.0, 3.0]))
+        np.testing.assert_array_equal(
+            simple_mol_node.best_total_value, np.array([1.5, 2.5])
+        )
 
     def test_downpropagate_with_parents(self, simple_mol_node):
         """Test downpropagation with parent reactions"""
         parent1 = Mock(spec=RxnNode)
-        parent1.total_value = [1.0, 2.0]
+        parent1.total_value = np.array([1.0, 2.0])
+        parent1.best_total_value = np.array([0.8, 1.5])
+        parent1.linear_cost = np.array([0.0, 0.0])
 
         parent2 = Mock(spec=RxnNode)
-        parent2.total_value = [0.5, 3.0]
+        parent2.total_value = np.array([0.5, 3.0])
+        parent2.best_total_value = np.array([0.3, 2.5])
+        parent2.linear_cost = np.array([0.0, 0.0])
 
         result = simple_mol_node.downpropagate([parent1, parent2])
 
         assert result
-        assert simple_mol_node.total_value == [0.5, 2.0]  # Min of parents
+        np.testing.assert_array_equal(
+            simple_mol_node.total_value, np.array([0.5, 2.0])
+        )  # Min of parents
+        np.testing.assert_array_equal(
+            simple_mol_node.best_total_value, np.array([0.3, 1.5])
+        )  # Min of parents' best_total_value
 
     def test_track_success_cost_reaction_grouping(self, simple_mol_node):
         """Test that track_success_cost groups reactions by SMILES and keeps lowest cost"""
@@ -314,7 +346,7 @@ class TestRxnNode:
             reagents=["H2SO4"],
             temp=350.0,
             depth=2,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -328,7 +360,7 @@ class TestRxnNode:
             reagents=["heat"],
             temp=400.0,
             depth=1,
-            cost=[0.5, 1.5],
+            cost=np.array([0.5, 1.5]),
             weight_length=3,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -343,6 +375,11 @@ class TestRxnNode:
         assert len(node.rxn_no) == 3
         assert len(node.total_value) == 3
         assert not node.success
+        # Check best_rxn_no and best_total_value initialization
+        np.testing.assert_array_equal(
+            node.best_rxn_no, np.array([0 for _ in range(len(node.cost))])
+        )
+        np.testing.assert_array_equal(node.best_total_value, np.array([]))
 
     def test_initialization_empty_cost(self):
         """Test that empty cost raises ValueError"""
@@ -353,7 +390,7 @@ class TestRxnNode:
                 reagents=["heat"],
                 temp=400.0,
                 depth=1,
-                cost=[],
+                cost=np.array([]),
                 weight_length=2,
                 pareto_objectives=2,
                 max_dominated_solutions=5,
@@ -367,7 +404,7 @@ class TestRxnNode:
             reagents=["reagent1"],
             temp=300.0,
             depth=1,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -379,25 +416,28 @@ class TestRxnNode:
             reagents=["reagent2"],  # different reagent
             temp=300.0,
             depth=1,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
         )
 
         # Costs should be different due to delta offset
-        assert node1.cost != node2.cost
-        assert node1.true_cost == node2.true_cost == [1.0, 2.0]
+        assert not np.array_equal(node1.cost, node2.cost)
+        np.testing.assert_array_equal(node1.true_cost, np.array([1.0, 2.0]))
+        np.testing.assert_array_equal(node2.true_cost, np.array([1.0, 2.0]))
 
     def test_uppropagate_successful_children(self, simple_rxn_node):
         """Test uppropagation with all successful children"""
         child1 = Mock(spec=MolNode)
-        child1.rxn_no = [1.0, 2.0]
+        child1.rxn_no = np.array([1.0, 2.0])
+        child1.best_rxn_no = np.array([0.8, 1.5])
         child1.success = True
         child1.success_cost = {(0.5, 1.0): ["mol1"]}
 
         child2 = Mock(spec=MolNode)
-        child2.rxn_no = [2.0, 1.0]
+        child2.rxn_no = np.array([2.0, 1.0])
+        child2.best_rxn_no = np.array([1.5, 0.7])
         child2.success = True
         child2.success_cost = {(1.0, 0.5): ["mol2"]}
 
@@ -409,20 +449,28 @@ class TestRxnNode:
         assert simple_rxn_node.success
         # Expected: child1 + child2 + reaction cost
         # [1.0, 2.0] + [2.0, 1.0] + weights @ [1.0, 2.0] = [3.0, 3.0] + [1.0, 2.0] = [4.0, 5.0]
-        expected_rxn_no = [4.0, 5.0]
+        expected_rxn_no = np.array([4.0, 5.0])
         np.testing.assert_array_almost_equal(
             simple_rxn_node.rxn_no, expected_rxn_no, decimal=10
+        )
+        # best_rxn_no: sum of children's best_rxn_no + reaction cost
+        # [0.8, 1.5] + [1.5, 0.7] + [1.0, 2.0] = [3.3, 4.2]
+        expected_best_rxn_no = np.array([3.3, 4.2])
+        np.testing.assert_array_almost_equal(
+            simple_rxn_node.best_rxn_no, expected_best_rxn_no, decimal=10
         )
 
     def test_uppropagate_unsuccessful_children(self, simple_rxn_node):
         """Test uppropagation with unsuccessful children"""
         child1 = Mock(spec=MolNode)
-        child1.rxn_no = [1.0, 2.0]
+        child1.rxn_no = np.array([1.0, 2.0])
+        child1.best_rxn_no = np.array([0.8, 1.5])
         child1.success = True
         child1.success_cost = {(0.5, 1.0): ["mol1"]}
 
         child2 = Mock(spec=MolNode)
-        child2.rxn_no = [2.0, 1.0]
+        child2.rxn_no = np.array([2.0, 1.0])
+        child2.best_rxn_no = np.array([1.5, 0.7])
         child2.success = False  # This child is not successful
         child2.success_cost = {}
 
@@ -443,17 +491,25 @@ class TestRxnNode:
     def test_downpropagate(self, simple_rxn_node):
         """Test downpropagation from parent molecule"""
         parent = Mock(spec=MolNode)
-        parent.rxn_no = [3.0, 4.0]
-        parent.total_value = [1.0, 1.5]
+        parent.rxn_no = np.array([3.0, 4.0])
+        parent.total_value = np.array([1.0, 1.5])
+        parent.best_rxn_no = np.array([2.5, 3.5])
+        parent.best_total_value = np.array([0.8, 1.2])
 
-        simple_rxn_node.rxn_no = [5.0, 6.0]
+        simple_rxn_node.rxn_no = np.array([5.0, 6.0])
+        simple_rxn_node.best_rxn_no = np.array([4.5, 5.5])
 
         result = simple_rxn_node.downpropagate(parent)
 
         assert result
         # Expected: rxn_no - parent.rxn_no + parent.total_value
         # [5.0, 6.0] - [3.0, 4.0] + [1.0, 1.5] = [3.0, 3.5]
-        assert simple_rxn_node.total_value == [3.0, 3.5]
+        np.testing.assert_array_equal(simple_rxn_node.total_value, np.array([3.0, 3.5]))
+        # Expected: best_rxn_no - parent.best_rxn_no + parent.best_total_value
+        # [4.5, 5.5] - [2.5, 3.5] + [0.8, 1.2] = [2.8, 3.2]
+        np.testing.assert_array_almost_equal(
+            simple_rxn_node.best_total_value, np.array([2.8, 3.2])
+        )
 
     def test_track_success_cost_cost_combination(self, simple_rxn_node):
         """Test that track_success_cost correctly combines costs from children"""
@@ -560,10 +616,10 @@ class TestUtilityFunctions:
     def test_zero_vector(self):
         """Test zero vector creation"""
         result = zero_vector(3)
-        assert result == [0.0, 0.0, 0.0]
+        assert np.array_equal(result, np.array([0.0, 0.0, 0.0]))
 
         result = zero_vector(0)
-        assert result == []
+        assert np.array_equal(result, np.array([]))
 
     def test_filter_pareto_with_dominated_empty(self):
         """Test filter_pareto_with_dominated with empty solutions"""
@@ -742,7 +798,7 @@ class TestIntegration:
             reagents=["reagent"],
             temp=300.0,
             depth=1,
-            cost=[0.5, 1.0],
+            cost=np.array([0.5, 1.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -807,7 +863,8 @@ class TestEdgeCases:
         )
 
         # Set initial state
-        node.rxn_no = [1.5]
+        node.rxn_no = np.array([1.5])
+        node.best_rxn_no = np.array([1.0, 1.5])
         node.success = False
 
         weights = np.array([[0.5, 0.5]])  # Will produce same rxn_no = [1.5]
@@ -823,7 +880,7 @@ class TestEdgeCases:
             reagents=["reagent"],
             temp=300.0,
             depth=1,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -831,7 +888,8 @@ class TestEdgeCases:
 
         # Create mock children
         child = Mock(spec=MolNode)
-        child.rxn_no = [1.0, 2.0]
+        child.rxn_no = np.array([1.0, 2.0])
+        child.best_rxn_no = np.array([0.8, 1.5])
         child.success = True
         child.success_cost = {(0.5, 1.0): ["mol1"]}
 
@@ -857,11 +915,13 @@ class TestEdgeCases:
         )
 
         # Set initial total_value
-        node.total_value = [1.0, 2.0]
+        node.total_value = np.array([1.0, 2.0])
+        node.best_total_value = np.array([0.8, 1.5])
 
         # Create parent with same total_value
         parent = Mock(spec=RxnNode)
-        parent.total_value = [1.0, 2.0]
+        parent.total_value = np.array([1.0, 2.0])
+        parent.best_total_value = np.array([0.8, 1.5])
 
         result = node.downpropagate([parent])
         assert not result  # No change should occur
@@ -874,21 +934,26 @@ class TestEdgeCases:
             reagents=["reagent"],
             temp=300.0,
             depth=1,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
         )
 
         # Set up state that would result in no change
-        rxn_node.rxn_no = [5.0, 6.0]
-        rxn_node.total_value = [3.0, 3.5]
+        rxn_node.rxn_no = np.array([5.0, 6.0])
+        rxn_node.best_rxn_no = np.array([4.5, 5.5])
+        rxn_node.total_value = np.array([3.0, 3.5])
+        rxn_node.best_total_value = np.array([2.8, 3.2])
 
         parent = Mock(spec=MolNode)
-        parent.rxn_no = [3.0, 4.0]
-        parent.total_value = [1.0, 1.5]
+        parent.rxn_no = np.array([3.0, 4.0])
+        parent.total_value = np.array([1.0, 1.5])
+        parent.best_rxn_no = np.array([2.5, 3.5])
+        parent.best_total_value = np.array([0.8, 1.2])
 
         # This should result in same total_value: [5.0, 6.0] - [3.0, 4.0] + [1.0, 1.5] = [3.0, 3.5]
+        # And same best_total_value: [4.5, 5.5] - [2.5, 3.5] + [0.8, 1.2] = [2.8, 3.2]
         result = rxn_node.downpropagate(parent)
         assert not result  # No change
 
@@ -947,7 +1012,7 @@ class TestEdgeCases:
             reagents=["reagent"],
             temp=300.0,
             depth=1,
-            cost=[1.0, 2.0],
+            cost=np.array([1.0, 2.0]),
             weight_length=2,
             pareto_objectives=2,
             max_dominated_solutions=5,
@@ -955,7 +1020,7 @@ class TestEdgeCases:
 
         # Create child with empty rxn_no
         child = Mock(spec=MolNode)
-        child.rxn_no = []  # Empty rxn_no
+        child.rxn_no = np.array([])  # Empty rxn_no
         child.success = True
         child.success_cost = {}
 
@@ -992,7 +1057,7 @@ class TestEdgeCases:
             node.success = False  # Ensure warning condition is met
 
             with caplog.at_level(logging.WARNING, logger="moretro.search.node_type"):
-                node.total_value = [0.0, 0.0]
+                node.total_value = np.array([0.0, 0.0])
 
             assert "Total value of node CCO is all zeros" in caplog.text
         finally:

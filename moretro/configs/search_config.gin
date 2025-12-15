@@ -11,7 +11,7 @@ building_blocks = "models/origin_dict.csv"
 objective_functions = ["sustainability_cost", "scaleup_cost", "toxicity_cost", "convergence_cost"]
 pareto_objectives = 3  # Number of objectives to consider for Pareto filtering
 max_dominated_solutions = 10  # Max number of dominated solutions to keep per node
-max_pareto_solutions = 100  # Max number of Pareto solutions to reach during search
+max_pareto_solutions = 150  # Max number of Pareto solutions to reach during search
 
 # Preparation methods
 prepare_starting_mols.file_path = %building_blocks
@@ -30,11 +30,13 @@ MOGraph.max_dominated_solutions = %max_dominated_solutions
 # Search Parameters
 MOSearch.top_n = 25
 MOSearch.max_depth = 12
-MOSearch.iteration_budget = 2000
+MOSearch.iteration_budget = 300
 MOSearch.weight_iter_budget = 20
-MOSearch.time_budget = 7200 # seconds
+MOSearch.time_budget = 600 # seconds
 MOSearch.weight_strategy = "it"
 MOSearch.max_pareto_solutions = %max_pareto_solutions
+MOSearch.stop_on_full_pareto = False
+MOSearch.exclude_dominated_nodes = True
 
 # Retro model
 retro_prediction.OneStepModel.model_type = "st"
