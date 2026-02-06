@@ -24,7 +24,6 @@ MOSearch.max_depth = 2
 MOSearch.iteration_budget = 10
 MOSearch.weight_iter_budget = 5
 MOSearch.time_budget = 30
-MOSearch.weight_strategy = "it"
 
 # NOTE: We intentionally don't configure the OneStepModel or ConditionPrediction
 # classes here since they require actual model files and are tested separately

@@ -3,13 +3,13 @@
 import json
 import logging
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 from rdkit import Chem
 
 from moretro.external.logp_prediction import LogPPredictor
+from moretro.utils.base_paths import MODELS_DIR, PACKAGE_DIR
 from moretro.utils.typing_hints import (
     BatchedCostFunction,
     CostFunctions,
@@ -18,41 +18,55 @@ from moretro.utils.typing_hints import (
 )
 
 logger = logging.getLogger(__name__)
-moretro_path = Path(__file__).parent.parent
+
+# Global variables to hold loaded models/data for cost functions
+TOXICITY_DATA: dict[str, float] | None = None
+LOGP_PREDICTOR: LogPPredictor | None = None
 
 
-def _load_toxicity_data() -> dict[str, Any]:
-    data_path = moretro_path / "external/tox_score/agents_with_scores.json"
-    try:
-        with open(data_path, "rb") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        logger.error(
-            "Toxicity data not found; toxicity_cost will not be calculated correctly."
-        )
-    except json.JSONDecodeError as exc:
-        logger.error("Failed to parse toxicity data (%s).", exc)
-    return {}
+def cost_loader(cost_name: str, device: str) -> None:
+    """
+    Loads the necessary models for the cost functions based on the provided cost name.
+    This function is called at module load time to ensure that models are loaded only once.
+    """
+    global TOXICITY_DATA, LOGP_PREDICTOR
 
-
-def _load_logp_predictor() -> LogPPredictor | None:
-    logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
-    logp_model_path = moretro_path / "models/model_logp.ckpt"
-    if not logp_model_path.exists():
-        logger.error(
-            "LogP checkpoint %s missing. Scale-up cost cannot be calculated anymore.",
-            logp_model_path,
-        )
-        return None
-    try:
-        return LogPPredictor(checkpoint_path=logp_model_path)
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.error("Failed to load LogP predictor (%s).", exc)
-        return None
-
-
-TOXICITY_DATA = _load_toxicity_data()
-LOGP_PREDICTOR = _load_logp_predictor()
+    if cost_name == "scaleup_cost":
+        logging.getLogger("lightning.pytorch").setLevel(logging.ERROR)
+        logp_model_path = MODELS_DIR / "objectives/model_logp.ckpt"
+        if not logp_model_path.exists():
+            logger.error(
+                "LogP checkpoint %s missing. Scale-up cost cannot be calculated anymore.",
+                logp_model_path,
+            )
+        try:
+            LOGP_PREDICTOR = LogPPredictor(
+                checkpoint_path=logp_model_path, device=device
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.error("Failed to load LogP predictor (%s).", exc)
+    elif cost_name == "toxicity_cost":
+        # Toxicity data is loaded at module level for efficiency
+        data_path = PACKAGE_DIR / "external/tox_score/agents_with_scores.json"
+        try:
+            with open(data_path, "rb") as f:
+                TOXICITY_DATA = json.load(f)
+        except FileNotFoundError:
+            logger.error(
+                "Toxicity data not found; toxicity_cost will not be calculated correctly."
+            )
+        except json.JSONDecodeError as exc:
+            logger.error("Failed to parse toxicity data (%s).", exc)
+    elif cost_name in {
+        "sustainability_cost",
+        "convergence_cost",
+        "retro_star_cost",
+        "policy_cost",
+    }:
+        # No specific model to load for these costs, but could be added here if needed
+        pass
+    else:
+        raise ValueError(f"Unknown cost function: {cost_name}")
 
 
 def batch_fn(func: Callable) -> Callable:
@@ -212,7 +226,7 @@ def scaleup_cost(predictions: list[dict[str, Any]]) -> list[float]:
     """
     Cost based on likelihood of ease of separation via LLE
     """
-    # TODO: improve this calculation - perhaps also including reagent (solvent)
+    # * Enhancement: improve this calculation - perhaps also including reagent (solvent)
     if not predictions:
         return []
 
@@ -327,4 +341,5 @@ COST_MAPPING = {
     "toxicity_cost": toxicity_cost,
     "convergence_cost": even_split,
     "retro_star_cost": log_score,
+    "policy_cost": log_score,
 }

@@ -156,7 +156,8 @@ def get_common_solvents_canonical() -> set[str]:
 def parse_rxn_smiles(rxn_smiles: str) -> tuple[list[str], list[str], list[str]]:
     """Split rxn_smiles into reactants, agents, and products by dot, no combination needed"""
     try:
-        reactants, agents, products = rxn_smiles.split(">")
+        reactants, products = rxn_smiles.split(">>")
+        agents = ""
         if " |" in products:
             products, _ = products.split(" |")
     except (TypeError, ValueError):
@@ -233,5 +234,5 @@ def canonicalize_smiles_list(s_list):
 def prep_rxn_smi_input(rxn_smi):
     """remove the |f| part and agents from rxn_smiles"""
     clean_smi = rxn_smi.split(" |")[0]
-    reactants, _, products = clean_smi.split(">")
+    reactants, products = clean_smi.split(">>")
     return f"{reactants}>>{products}"

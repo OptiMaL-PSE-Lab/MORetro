@@ -1,5 +1,6 @@
 **.pyc
 .vscode/
 models/
+!moretro/external/Graph2Edits/models/
 logs/
 figs/

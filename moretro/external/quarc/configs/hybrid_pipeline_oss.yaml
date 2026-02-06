@@ -1,4 +1,4 @@
-base_model_dir: "moretro/models/quarc"
+base_model_dir: "models/quarc"
 
 models:
   agent:

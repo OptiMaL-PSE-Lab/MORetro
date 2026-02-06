@@ -157,7 +157,7 @@ class QuarcPredictor:
                     reaction, top_k=top_k, beam_size=beam_size
                 )
                 result = self._format_prediction_results(
-                    predictions, top_k=top_k, beam_size=beam_size
+                    predictions, top_k=top_k
                 )
                 all_results.append(result)
         elif self.device == "cuda":

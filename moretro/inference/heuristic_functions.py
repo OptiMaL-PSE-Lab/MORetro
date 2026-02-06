@@ -1,5 +1,4 @@
 import warnings
-from pathlib import Path
 
 import numpy as np
 import torch
@@ -11,16 +10,39 @@ from sklearn.exceptions import InconsistentVersionWarning  # type: ignore
 from moretro.external.molprice import MolPrice
 from moretro.external.sa_score import sascorer_optimized
 from moretro.external.value_fn import load_value_model
+from moretro.utils.base_paths import MODELS_DIR
 
 warnings.filterwarnings(action="ignore", category=InconsistentVersionWarning)
 RDLogger.DisableLog("rdApp.*")  # type: ignore
 
-# Instantiate the model once at module level to avoid overhead
-model_path = Path(__file__).parent.parent / "models"
-_price_model = MolPrice(weights_path=model_path / "model_price.pkl")
-_toxicity_model = load(model_path / "model_toxicity.joblib")
-_value_model = load_value_model(model_path / "model_value.pt", device="cpu")
 _fp_generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=1024)
+
+
+# Instantiate the model once at module level to avoid overhead
+def heuristic_loader(cost_name: str) -> None:
+    """
+    Loads the necessary models for the heuristics based on the provided cost dictionary.
+    This function is called at module load time to ensure that models are loaded only once.
+    """
+    global _price_model, _toxicity_model, _value_model
+    objective_dir = MODELS_DIR / "objectives"
+    if cost_name == "sustainability_cost":
+        # No model to load for sustainability cost
+        return
+    elif cost_name == "scaleup_cost":
+        model_path = objective_dir / "model_price.pkl"
+        _price_model = MolPrice(weights_path=model_path)
+    elif cost_name == "toxicity_cost":
+        model_path = objective_dir / "model_toxicity.joblib"
+        _toxicity_model = load(model_path)
+    elif cost_name in {"convergence_cost", "retro_star_cost"}:
+        model_path = objective_dir / "model_value.pt"
+        _value_model = load_value_model(model_path, device="cpu")
+    elif cost_name == "policy_cost":
+        # No model to load for policy cost
+        return
+    else:
+        raise ValueError(f"Unknown cost function: {cost_name}")
 
 
 def price_heuristic(smiles: str) -> float:
@@ -72,12 +94,20 @@ def value_heuristic(smiles: str) -> float:
     return value
 
 
+def zero_heuristic(smiles: str) -> float:
+    """
+    A heuristic that always returns zero.
+    """
+    return 0.0
+
+
 COST_MAPPING = {
     "sustainability_cost": sustainability_heuristic,
     "scaleup_cost": price_heuristic,
     "toxicity_cost": toxicity_heuristic,
     "convergence_cost": value_heuristic,
     "retro_star_cost": value_heuristic,
+    "policy_cost": zero_heuristic,
 }
 
 if __name__ == "__main__":

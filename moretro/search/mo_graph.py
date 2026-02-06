@@ -1,6 +1,4 @@
-import heapq
 import logging
-import time
 from collections.abc import Callable
 from typing import cast
 
@@ -11,6 +9,7 @@ from scipy.stats import qmc
 
 from moretro.inference.and_or_graph import AndOrGraph
 from moretro.search.node_type import MolNode, RxnNode
+from moretro.utils.bo_weight_selector import BOWeightSelector
 from moretro.utils.typing_hints import (
     CostVector,
     MolNodeAndWeights,
@@ -43,26 +42,18 @@ class MOGraph:
         Number of Pareto objectives.
     max_dominated_solutions : int
         Maximum number of dominated solutions to keep.
-    open_nodes : set[MolNode]
-        Set of nodes available for expansion.
-    weights : np.ndarray
-        Currently active weight vectors.
-    weights_open : np.ndarray
-        Pool of remaining weight vectors.
-    weight_history : list[list[float]]
-        History of previously used weight vectors.
-    solution_cost : SolutionCost
-        Dictionary mapping cost vectors to synthesis paths and weight indices.
-    pareto_front : ParetoCost
-        Current Pareto-optimal solutions.
-    mol_to_node : dict[str, MolNode]
-        Mapping from molecule SMILES to their corresponding nodes.
-    target_node : MolNode
-        The root node representing the target molecule.
-    graph : AndOrGraph
-        The underlying AND/OR graph structure.
-    rng : np.random.Generator
-        Random number generator for reproducible weight sampling.
+    zero_bound : bool
+        Whether to use zero-bound heuristics.
+    weight_samples: int
+        Total number of weight vectors to sample (used for "sobol" or "dirichlet").
+    no_weights: int
+        Number of active weights at a time.
+    weight_initial: str
+        Weight initialization strategy ("sobol", "grid", "constant").
+    include_extreme: bool
+        Whether to include extreme points in weight initialization.
+    weight_update_strategy: str
+        Strategy for updating weights ("queue" or "bo").
     """
 
     def __init__(
@@ -77,6 +68,7 @@ class MOGraph:
         no_weights: int = 5,
         weight_initial: str = "sobol",
         include_extreme: bool = False,
+        weight_update_strategy: str = "queue",
     ):
         self.target = Chem.CanonSmiles(target)
         self.building_blocks = building_blocks
@@ -88,6 +80,8 @@ class MOGraph:
         self.weight_samples = weight_samples
         self.no_weights = no_weights
         self.weight_initial = weight_initial
+        self.include_extreme = include_extreme
+        self.weight_update_strategy = weight_update_strategy
         self.weights_open: np.ndarray = np.zeros(
             (self.weight_samples, len(self.heuristic_fns))
         )
@@ -96,6 +90,17 @@ class MOGraph:
         self.pareto_front: ParetoCost = {}
         self.pareto_front_costs: np.ndarray = np.empty((0, pareto_objectives))
         self.mol_to_node: dict[str, MolNode] = {}
+
+        # Assignment check:
+        if self.pareto_objectives > len(self.heuristic_fns):
+            logger.error(
+                f"pareto_objectives ({self.pareto_objectives}) cannot be greater than the number of heuristic functions ({len(self.heuristic_fns)})."
+            )
+            raise ValueError("Invalid pareto_objectives configuration.")
+        # BO bookkeeping
+        self.bo_selector: BOWeightSelector | None = None
+        if self.weight_update_strategy == "bo":
+            self.bo_selector = BOWeightSelector(len(heuristic_fns), seed=42)
 
         # Create a dedicated random number generator for reproducibility
         self.rng = np.random.default_rng(seed=42)
@@ -122,19 +127,35 @@ class MOGraph:
             # add open target node no_weights time to set in list
             self.open_nodes.add(self.target_node)
             self.mol_to_node[self.target] = self.target_node
-            self.target_node.total_value = [0.0] * self.no_weights
+            self.target_node.total_value = np.zeros(self.no_weights)
 
-        self.weights_open = self.weight_initialization(
-            n_obj=len(heuristic_fns),
-            init_type=weight_initial,
-            include_extreme=include_extreme,
-        )
-        self.rng.shuffle(self.weights_open)
+        # initialize weights depending on strategy
+        if self.bo_selector:
+            initial_weights_open = self.weight_initialization(
+                n_obj=len(heuristic_fns), init_type="grid", include_extreme=False
+            )
+            bo_weights_open = self.weight_initialization(
+                n_obj=len(heuristic_fns),
+                init_type=self.weight_initial,
+                include_extreme=include_extreme,
+                second_sample=True,  # flag to generate different samples for BO
+            )
+            self.weights_open = np.vstack([initial_weights_open, bo_weights_open])
+        else:
+            self.weights_open = self.weight_initialization(
+                n_obj=len(heuristic_fns),
+                init_type=weight_initial,
+                include_extreme=include_extreme,
+            )
+            self.rng.shuffle(self.weights_open)
         # pop no_weights from weights_open into self.weights
         self.weights = self.weights_open[
             : self.no_weights, :
         ]  # dimensions: (no_weights, n_obj)
         self.weights_open = self.weights_open[self.no_weights :]
+
+        if self.bo_selector:
+            self.bo_selector.add_batch(self.weights)
 
     def expand_graph(
         self,
@@ -252,13 +273,9 @@ class MOGraph:
             True if Pareto front was updated.
         """
         nodes_to_update = nodes.copy()
-        start = time.time()
         updated_nodes, new_solutions = self.uppropagation(nodes_to_update)
-        logger.info(f"Uppropagation took {time.time() - start:.2f} seconds")
         nodes_to_update.update(updated_nodes)
-        start = time.time()
         downprop_updated, _ = self.downpropagation(nodes_to_update)
-        logger.info(f"Downpropagation took {time.time() - start:.2f} seconds")
         pareto_updated = self.update_solution_and_pareto(new_solutions)
 
         return pareto_updated
@@ -292,8 +309,16 @@ class MOGraph:
                 weight_groups[weight_indices] = []
             weight_groups[weight_indices].append(node)
 
-        # sort dict so smallest weight_indices are processed first
-        weight_groups = dict(sorted(weight_groups.items(), key=lambda item: item[0]))
+        # sort dict so the group with the lowest rxn node depth goes first
+        def group_sort_key(item):
+            nodes = item[1]
+            rxn_depths = [n.depth for n in nodes if isinstance(n, RxnNode)]
+            if rxn_depths:
+                return min(rxn_depths)
+            return min((n.depth for n in nodes), default=float("inf"))
+
+        weight_groups = dict(sorted(weight_groups.items(), key=group_sort_key))
+        processed_weight_indices = set()
         for weight_indices, nodes in weight_groups.items():
             old_solutions = set(self.target_node.success_cost.keys())
 
@@ -302,10 +327,11 @@ class MOGraph:
             copy_weight_groups.pop(weight_indices)
             # Get all reaction nodes from other weight groups
             rxn_nodes: set[RxnNode] = set()
-            for other_nodes in copy_weight_groups.values():
-                rxn_nodes.update(
-                    node for node in other_nodes if isinstance(node, RxnNode)
-                )
+            for other_indices, other_nodes in copy_weight_groups.items():
+                if other_indices not in processed_weight_indices:
+                    rxn_nodes.update(
+                        node for node in other_nodes if isinstance(node, RxnNode)
+                    )
             # Sort nodes by depth (deepest first) and then by SMILES length within each depth level
             queue = [(-node.depth, id(node), node, False) for node in nodes]
             # sort the queue by depth and smiles length
@@ -324,7 +350,9 @@ class MOGraph:
                 elif isinstance(node, MolNode):
                     children = cast(list[RxnNode], list(self.graph.successors(node)))
                     parents_update, child_new_success = node.uppropagate(
-                        children, self.weights, child_new_success
+                        children,
+                        self.weights,
+                        child_new_success,
                     )
                 else:
                     raise TypeError(
@@ -347,6 +375,8 @@ class MOGraph:
             new_costs = current_solution.difference(old_solutions)
             if new_costs:
                 new_solutions.update({cost: weight_indices for cost in new_costs})
+
+            processed_weight_indices.add(weight_indices)
 
         # Filter new_solutions to keep only costs still present after all weight groups have been processed
         new_solutions = {
@@ -371,14 +401,13 @@ class MOGraph:
         tuple[set[Nodes], set[Nodes]]
             Tuple of (updated_nodes, processed_nodes).
         """
-        # Use priority queue to maintain depth order (positive depth for min-heap behavior)
-        queue = [(node[0].depth, id(node[0]), node[0]) for node in nodes]
-        heapq.heapify(queue)
+        # Use list to maintain depth order
+        queue = sorted([node[0] for node in nodes], key=lambda x: x.depth)
         updated_nodes = set()
         processed = set()  # Track processed nodes to avoid duplicates
 
         while queue:
-            _, _, node = heapq.heappop(queue)
+            node = queue.pop(0)
             processed.add(node)
 
             if isinstance(node, RxnNode):
@@ -396,7 +425,7 @@ class MOGraph:
                 updated_nodes.add(node)
                 for child in self.graph.successors(node):
                     if child not in queue:
-                        heapq.heappush(queue, (child.depth, id(child), child))
+                        queue.append(child)
 
         return updated_nodes, processed
 
@@ -415,6 +444,11 @@ class MOGraph:
             True if Pareto front was updated.
         """
         old_pareto = set(self.pareto_front.keys())
+        old_pareto_costs = (
+            np.array(list(self.pareto_front.keys()))
+            if self.pareto_front
+            else np.empty((0, self.pareto_objectives))
+        )
         new_pareto = set(self.target_node.local_pareto.keys())
         pareto_points_to_remove = old_pareto - new_pareto
         new_pareto_points = new_pareto - old_pareto
@@ -428,6 +462,9 @@ class MOGraph:
             self.solution_cost.pop(cost, None)
             self.pareto_front.pop(cost, None)
 
+        # Keep track of which local weight indices contributed new solutions
+        contributing_local_weight_indices: set[int] = set()
+
         for cost_vector, weight_indices in new_solutions.items():
             # Get the path information from target node's success_cost
             path_nodes = self.target_node.success_cost[cost_vector]
@@ -439,14 +476,32 @@ class MOGraph:
 
             # Store the new solution with path and global indices
             self.solution_cost[cost_vector] = (path_nodes, global_weight_indices)
+
             # Check if this should be added to Pareto front
             if cost_vector in new_pareto:
+                # Record contributing local indices
+                for i in weight_indices:
+                    contributing_local_weight_indices.add(i)
+
                 weights = [
                     self.weights[i].tolist()
                     for i in weight_indices
                     if i < len(self.weights)
                 ]
                 self.pareto_front[cost_vector] = weights
+
+        # Now compute delta HV (hypervolume improvement)
+        new_pareto_costs = (
+            np.array(list(self.pareto_front.keys()))
+            if self.pareto_front
+            else np.empty((0, self.pareto_objectives))
+        )
+        if self.bo_selector and contributing_local_weight_indices:
+            self.bo_selector.process_pareto_update(
+                old_pareto_costs,
+                new_pareto_costs,
+                contributing_local_weight_indices,
+            )
 
         if new_pareto_points or pareto_points_to_remove:
             pareto_front_costs = np.array(list(self.pareto_front.keys()))
@@ -489,14 +544,49 @@ class MOGraph:
     def update_weights(self) -> None:
         """
         Update active weights from weight pool.
+
+        Uses BO surrogate to select weights if we've collected some data and strategy is 'bo'.
         """
-        # TODO decide if one should do "smart updating based on sampled weights"
+        # record the current weights into history (they have already been sampled)
         self.weight_history.extend(self.weights.tolist())
+
+        # If there are fewer remaining weights than no_weights, just take what's available
+        if len(self.weights_open) <= self.no_weights:
+            self.weights = self.weights_open.copy()
+            self.weights_open = np.empty((0, self.weights.shape[1]))
+            if self.bo_selector:
+                self.bo_selector.add_batch(self.weights)
+            return
+
+        if self.bo_selector:
+            # Attempt BO selection
+            try:
+                selected_weights, remaining_weights = (
+                    self.bo_selector.select_next_weights(
+                        self.weights_open, k=self.no_weights
+                    )
+                )
+                self.weights = selected_weights
+                self.weights_open = remaining_weights
+                self.bo_selector.add_batch(self.weights)
+                return
+            except Exception as e:
+                logger.warning(
+                    f"BO weight selection failed ({e}), falling back to simple pop."
+                )
+
+        # Default / Fallback strategy: simple pop (queue)
         self.weights = self.weights_open[: self.no_weights, :]
         self.weights_open = self.weights_open[self.no_weights :]
+        if self.bo_selector:
+            self.bo_selector.add_batch(self.weights)
 
     def weight_initialization(
-        self, n_obj: int, init_type: str, include_extreme: bool
+        self,
+        n_obj: int,
+        init_type: str,
+        include_extreme: bool,
+        second_sample: bool = False,
     ) -> np.ndarray:
         """
         Initialize set of weights for linear combination of objectives.
@@ -509,6 +599,8 @@ class MOGraph:
             Type of weight initialization to use. Options are "sobol" or "dirichlet".
         include_extreme : bool
             Whether to include extreme points in the weight vectors.
+        second_sample: bool
+            Whether this is a second sample for BO (used to generate different samples).
 
         Returns
         -------
@@ -522,7 +614,7 @@ class MOGraph:
         elif init_type == "dirichlet":
             return self.rng.dirichlet(np.ones(n_obj), size=self.weight_samples)
         elif init_type == "grid":
-            return self._grid_initialization()
+            return self._grid_initialization(second_sample)
         elif init_type == "constant":
             return self._constant_initialization()
         else:
@@ -565,28 +657,29 @@ class MOGraph:
             )
             raise ValueError("Please re-adjust the number of samples")
 
-        sobol = qmc.Sobol(d=n_obj, scramble=False, rng=self.rng)
+        sobol = qmc.Sobol(d=n_obj, scramble=True, rng=self.rng)
+        logger.info(
+            "Sobol Sobol sequence (scramble=True) introduces randomness which may affect reproducibility."
+        )
         m = int(np.log2(sobol_samples_needed))
         raw_samples = sobol.random_base2(m=m)
-
-        # Add small epsilon to avoid extreme weights (important for optimization)
-        epsilon = 0.01
-        raw_adjusted = raw_samples + epsilon
-
-        sobol_weights = raw_adjusted / raw_adjusted.sum(axis=1, keepdims=True)
+        sobol_weights = raw_samples / raw_samples.sum(
+            axis=1, keepdims=True
+        )  # Normalize to sum to 1
 
         # Create final weights array
         if include_extreme:
             extreme_points = np.eye(n_obj)
             weights = np.vstack([sobol_weights, extreme_points])
+            logger.info(
+                f"Generated {sobol_samples_needed} Sobol samples + {n_obj} extreme points = {n_samples} total weight vectors"
+            )
         else:
             weights = sobol_weights
-        logger.info(
-            f"Generated {sobol_samples_needed} Sobol samples + {n_obj} extreme points = {n_samples} total weight vectors"
-        )
+            logger.info(f"Generated {sobol_samples_needed} Sobol samples.")
         return weights
 
-    def _grid_initialization(self) -> np.ndarray:
+    def _grid_initialization(self, second_sample: bool) -> np.ndarray:
         """
         Generate grid-based weight vectors.
 
@@ -594,10 +687,14 @@ class MOGraph:
         -------
         np.ndarray
             Grid-based weight vectors.
+        second_sample: bool
+            Whether this is a second sample for BO (used to generate different samples with finer grid).
         """
-        if len(self.heuristic_fns) <= 3:
+        if len(self.heuristic_fns) <= 3 or (self.bo_selector and not second_sample):
             # Generate grid points with a step size of 0.25 (0, 0.25, 0.5, 0.75, 1) that sum to 1
             steps = [0.0, 0.25, 0.5, 0.75, 1.0]
+        elif second_sample:
+            steps = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
         else:
             # Coarser steps for higher dim
             steps = [0.0, 1 / 3, 2 / 3, 1.0]
@@ -606,12 +703,15 @@ class MOGraph:
         ).T.reshape(-1, len(self.heuristic_fns))
         # Filter points that sum to 1
         grid_weights = grid_points[np.isclose(grid_points.sum(axis=1), 1.0)]
+        # * Enhancement: this is the point to improve - what should initial samples be?
+        if self.bo_selector and not second_sample:
+            grid_weights = grid_weights[grid_weights[:, -1] >= 0.5]
         # spawn dummy weights s.t. len(weights) % no_weights == 0
+        random_weights = self.rng.dirichlet(np.ones(len(self.heuristic_fns)), size=20)
         i = 0
         while len(grid_weights) % self.no_weights != 0:
-            grid_weights = np.vstack(
-                [grid_weights, grid_weights[i % len(grid_weights)]]
-            )
+            grid_weights = np.vstack([grid_weights, random_weights[i]])
+            i += 1
         logger.info(f"Generated {len(grid_weights)} grid-based weight vectors.")
         return grid_weights
 

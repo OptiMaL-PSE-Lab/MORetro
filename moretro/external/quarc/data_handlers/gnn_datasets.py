@@ -45,7 +45,8 @@ def standardize_and_encode_agents(
 
 def rxn_smiles_to_mols(rxn_smiles: str) -> tuple[Chem.Mol, Chem.Mol]:
     """prep_rxn_smi_input has already deleted agent and |f| part"""
-    rct_smi, agt_smi, pdt_smi = rxn_smiles.split(">")
+    rct_smi, pdt_smi = rxn_smiles.split(">>")
+    agt_smi = ""
     rct_smi = f"{rct_smi}.{agt_smi}" if agt_smi else rct_smi  #
     rct = make_mol(rct_smi, keep_h=False, add_h=False)
     pdt = make_mol(pdt_smi, keep_h=False, add_h=False)

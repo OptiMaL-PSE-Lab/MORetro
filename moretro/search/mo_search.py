@@ -42,11 +42,14 @@ class MOSearch:
         Number of iterations before resampling weights.
     time_budget : float, default 0.0
         Maximum time budget in seconds (0.0 means no time limit).
-    weight_strategy : str, default "it"
-        Weight resampling strategy ("it" for iterative, "obj" for objective-based).
+    single_step_call_budget : int, default 0
+        Maximum number of single-step model calls allowed (0 means no limit).
     max_pareto_solutions : int, default 250
         Maximum number of Pareto solutions to find before stopping search.
     stop_on_full_pareto : bool, default False
+        Whether to stop search when the full Pareto front is found.
+    exclude_dominated_nodes : bool, default False
+        Whether to exclude nodes dominated by the current Pareto front from expansion.
     """
 
     def __init__(
@@ -60,7 +63,7 @@ class MOSearch:
         iteration_budget: int,
         weight_iter_budget: int,
         time_budget: float = 0.0,
-        weight_strategy: str = "it",  # "it" for iterative, "obj" for objective
+        single_step_call_budget: int = 0,
         max_pareto_solutions: int = 250,
         stop_on_full_pareto: bool = False,
         exclude_dominated_nodes: bool = False,
@@ -79,14 +82,15 @@ class MOSearch:
             include_extreme=gin.REQUIRED,  # type: ignore
         )
         self.top_n = top_n
-        self.weight_strategy = weight_strategy
         self.weight_iter_budget = weight_iter_budget
         self.iteration_budget = iteration_budget
         self.time_budget = time_budget
+        self.single_step_call_budget = single_step_call_budget
         self.max_pareto_solutions = max_pareto_solutions
         self.stop_on_full_pareto = stop_on_full_pareto
         self.exclude_dominated_nodes = exclude_dominated_nodes
         self.weights_open: list[bool] = [True] * self.search_graph.no_weights
+        self.retro_expansion_count = 0
 
     def can_expand_retro(self, node: Nodes) -> bool:
         """
@@ -238,27 +242,15 @@ class MOSearch:
         Returns
         -------
         int
-            1 to reset weight iteration counter, 0 for no action, -100 to exit search.
+            Updated weight iteration count (reset to 1 if new weights are sampled, incremented otherwise)
+            -100 if iteration budget is reached and search should terminate.
         """
-        if self.weight_strategy == "it":
-            if num_iter == self.weight_iter_budget + 1 or early_resampling:
-                logger.info("Sampling new weights...")
-                if (
-                    self.search_graph.weights_open.shape[0]
-                    < self.search_graph.no_weights
-                ):
-                    return -100  # exit search
-                self.search_graph.reinitialize_graph()
-                return 1
-        elif self.weight_strategy == "obj":
-            logger.info("Sampling new weights as objectives are below threshold...")
-            # TODO Yet to implement objective-based search
-            return 0
-        else:
-            logger.error(
-                f"Invalid weight strategy: {self.weight_strategy}. Use 'it' or 'obj'."
-            )
-            return 0
+        if num_iter == self.weight_iter_budget + 1 or early_resampling:
+            logger.info("Sampling new weights...")
+            if self.search_graph.weights_open.shape[0] < self.search_graph.no_weights:
+                return -100  # exit search
+            self.search_graph.reinitialize_graph()
+            return 1
         return num_iter
 
     def choose_next_nodes(self) -> tuple[MolNodeAndWeights, bool]:
@@ -324,6 +316,7 @@ class MOSearch:
                 if i >= len(dims):
                     break
                 i += 1
+        self.retro_expansion_count += len(nodes_and_weights_to_expand)
         return nodes_and_weights_to_expand, False
 
     def run_mo_search(self) -> None:
@@ -337,7 +330,7 @@ class MOSearch:
         4. Update graph values and Pareto front
         5. Handle early resampling if all weights become blocked
 
-        The search terminates when the iteration budget is reached, time budget
+        The search terminates when the iteration budget is reached, single-step call or time budget
         is exceeded, no open nodes remain, or all weight vectors are exhausted.
         One can also set a flag that the search terminates as soon as the full Pareto front is found.
         """
@@ -346,7 +339,17 @@ class MOSearch:
         weight_iter = 1
         elapsed_time = 0
         start_time = time.time()
-        while iter_counter < self.iteration_budget and elapsed_time < self.time_budget:
+        time_budget = np.inf if self.time_budget == 0.0 else self.time_budget
+        call_budget = (
+            np.inf
+            if self.single_step_call_budget == 0
+            else self.single_step_call_budget
+        )
+        while (
+            iter_counter < self.iteration_budget
+            and elapsed_time < time_budget
+            and self.retro_expansion_count < call_budget
+        ):
             torch.cuda.empty_cache()
             weight_iter = self.spawn_new_weights(weight_iter, early_resampling=False)
 

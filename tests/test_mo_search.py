@@ -73,7 +73,7 @@ class TestMOSearchInitialization:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
     def test_init_basic(
         self, mock_retro_model, simple_heuristics, basic_building_blocks
@@ -91,7 +91,6 @@ class TestMOSearchInitialization:
             iteration_budget=100,
             weight_iter_budget=20,
             time_budget=300.0,
-            weight_strategy="it",
         )
 
         assert search.max_depth == 6  # 2 * max_depth
@@ -99,7 +98,6 @@ class TestMOSearchInitialization:
         assert search.weight_iter_budget == 20
         assert search.iteration_budget == 100
         assert search.time_budget == 300.0
-        assert search.weight_strategy == "it"
         assert isinstance(search.search_graph, MOGraph)
         assert len(search.weights_open) == 4  # no_weights from gin config
 
@@ -116,7 +114,7 @@ class TestCanExpandRetro:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -294,7 +292,7 @@ class TestSpawnNewWeights:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -308,7 +306,6 @@ class TestSpawnNewWeights:
             max_depth=3,
             iteration_budget=50,
             weight_iter_budget=10,
-            weight_strategy="it",
         )
 
     def test_spawn_new_weights_iterative_budget_reached(self, search_instance):
@@ -352,14 +349,6 @@ class TestSpawnNewWeights:
 
         assert result == 5  # No action
 
-    def test_spawn_new_weights_objective_strategy(self, search_instance):
-        """Test weight spawning with objective strategy"""
-        search_instance.weight_strategy = "obj"
-
-        result = search_instance.spawn_new_weights(num_iter=10, early_resampling=False)
-
-        assert result == 0  # Not implemented yet, returns 0
-
 
 class TestChooseNextNodes:
     """Test cases for choose_next_nodes method"""
@@ -373,7 +362,7 @@ class TestChooseNextNodes:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -523,7 +512,6 @@ class TestRunMOSearchIntegration:
             iteration_budget=5,  # Small budget for quick test
             weight_iter_budget=3,
             time_budget=10.0,  # 10 second limit
-            weight_strategy="it",
         )
 
         # Mock torch.cuda.empty_cache to avoid CUDA issues in testing
@@ -546,7 +534,7 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         heuristics = [lambda x: 1.0, lambda x: 2.0]
@@ -604,7 +592,6 @@ class TestRunMOSearchIntegration:
             iteration_budget=100,  # High iteration budget
             weight_iter_budget=50,
             time_budget=0.001,  # Very small time budget
-            weight_strategy="it",
         )
 
         start_time = time.time()
@@ -625,7 +612,7 @@ class TestRunMOSearchIntegration:
         gin.bind_parameter("MOGraph.weight_initial", "sobol")
         gin.bind_parameter("MOGraph.include_extreme", False)
         gin.bind_parameter("MOGraph.max_dominated_solutions", 5)
-        gin.bind_parameter("MOGraph.pareto_objectives", 3)
+        gin.bind_parameter("MOGraph.pareto_objectives", 2)
 
         mock_model = Mock(spec=OneStepModel)
         mock_model.predict.return_value = [
@@ -652,7 +639,6 @@ class TestRunMOSearchIntegration:
             max_depth=2,
             iteration_budget=100,
             weight_iter_budget=2,  # Small weight iteration budget
-            weight_strategy="it",
         )
 
         with patch("torch.cuda.empty_cache"):
@@ -762,7 +748,6 @@ class TestMOSearchRealWorldScenario:
                 iteration_budget=20,
                 weight_iter_budget=8,
                 time_budget=30.0,
-                weight_strategy="it",
             )
 
             # Run the search

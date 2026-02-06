@@ -5,24 +5,20 @@ This module provides functionality to load a ChemProp v2 model checkpoint
 and make LogP predictions using the MultiHotAtomFeaturizer.
 """
 
-from typing import List, Union, Optional
-from pathlib import Path
-import logging
 import warnings
+from pathlib import Path
 
-import torch
 import numpy as np
+import torch
 from lightning import pytorch as pl
 
 # Suppress specific DataLoader warnings
 warnings.filterwarnings("ignore", ".*does not have many workers.*")
 warnings.filterwarnings("ignore", ".*Consider increasing the value of.*num_workers.*")
 warnings.filterwarnings("ignore", ".*is an instance of `nn.Module`.*")
-from chemprop import data, featurizers, models
-from chemprop.data import MoleculeDataset, MoleculeDatapoint
+from chemprop import data, featurizers
 from chemprop.featurizers import MultiHotAtomFeaturizer
 from chemprop.models import MPNN
-from rdkit import Chem
 
 
 class LogPPredictor:
@@ -30,7 +26,7 @@ class LogPPredictor:
     A class for loading ChemProp v2 models and making LogP predictions.
     """
 
-    def __init__(self, checkpoint_path: Union[str, Path]):
+    def __init__(self, checkpoint_path: str | Path, device: str = "cuda"):
         """
         Initialize the LogP predictor with a model checkpoint.
 
@@ -44,7 +40,7 @@ class LogPPredictor:
         self.featurizer = featurizers.SimpleMoleculeMolGraphFeaturizer(
             atom_featurizer=atom_featurizer
         )
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = device
 
         self._load_model()
 
@@ -56,11 +52,9 @@ class LogPPredictor:
             )
 
         try:
-            # Load the model checkpoint
-            checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
-
-            # Initialize model from checkpoint
-            self.model = MPNN.load_from_checkpoint(self.checkpoint_path)
+            self.model = MPNN.load_from_checkpoint(
+                self.checkpoint_path, map_location=self.device
+            )
             self.model.to(self.device)
             self.model.eval()
 
@@ -80,7 +74,7 @@ class LogPPredictor:
         result = self.predict_batch([smiles])[0]
         return result
 
-    def predict_batch(self, smiles_list: List[str]) -> List[float]:
+    def predict_batch(self, smiles_list: list[str]) -> list[float]:
         """
         Predict LogP for a batch of SMILES strings.
 
@@ -102,7 +96,11 @@ class LogPPredictor:
 
             # Create data loader using ChemProp's build_dataloader
             # Set num_workers=0 for prediction to avoid multiprocessing overhead and warnings
-            test_loader = data.build_dataloader(test_dataset, shuffle=False, num_workers=0, batch_size=256)
+            test_loader = data.build_dataloader(
+                test_dataset, shuffle=False, num_workers=0, batch_size=256
+            )
+
+            accelerator = "gpu" if self.device == "cuda" else "cpu"
 
             # Set up trainer for prediction
             with torch.inference_mode():
@@ -111,8 +109,8 @@ class LogPPredictor:
                     enable_progress_bar=False,
                     enable_model_summary=False,
                     enable_checkpointing=False,
-                    accelerator="gpu" if torch.cuda.is_available() else "cpu",
-                    devices=1,
+                    accelerator=accelerator,
+                    devices="auto",
                 )
 
                 # Make predictions
@@ -126,8 +124,8 @@ class LogPPredictor:
             raise RuntimeError(f"Prediction failed: {e}")
 
     def predict_from_file(
-        self, input_file: Union[str, Path], smiles_column: str = "smiles"
-    ) -> List[float]:
+        self, input_file: str | Path, smiles_column: str = "smiles"
+    ) -> list[float]:
         """
         Predict LogP values from a CSV file containing SMILES.
 

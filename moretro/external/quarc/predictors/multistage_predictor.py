@@ -69,7 +69,7 @@ class HierarchicalPrediction:
 
         # Extract model inputs
         FP_reactants = reaction_data.model_inputs["FP_reactants"]
-        # rxn_class = reaction_data.model_inputs["rxn_class"]
+        # rxn_class = reaction_data.model.inputs["rxn_class"]
         mg = reaction_data.model_inputs["mg"]
         FP_inputs = reaction_data.model_inputs["FP_inputs"]
 
@@ -89,6 +89,7 @@ class HierarchicalPrediction:
             FP_inputs=FP_inputs_tensor,
             a_input=torch.zeros(len(agent_encoder), dtype=torch.float).unsqueeze(0).to(device),
             top_k_agents=top_k_agents,
+            beam_size = beam_size
         )
 
         agent_groups = []
@@ -171,6 +172,7 @@ class HierarchicalPrediction:
         FP_inputs,
         a_input,
         top_k_agents,
+        beam_size
     ) -> list[tuple[torch.Tensor, float]]:
         """use given model to predict agents, returns beam search results list[(agent_pred_tensor, score)]"""
 
@@ -183,7 +185,7 @@ class HierarchicalPrediction:
                 num_classes=len(agent_encoder),
                 agents_input=a_input,
                 max_steps=6,
-                beam_size=self.beam_size,
+                beam_size=beam_size,
                 eos_id=0,
                 return_top_n=top_k_agents,
                 verbosity=0,
@@ -196,7 +198,7 @@ class HierarchicalPrediction:
                 num_classes=len(agent_encoder),
                 agents_input=a_input,
                 max_steps=6,
-                beam_size=self.beam_size,
+                beam_size=beam_size,
                 eos_id=0,
                 return_top_n=top_k_agents,
                 verbosity=0,

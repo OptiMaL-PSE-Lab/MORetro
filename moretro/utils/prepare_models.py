@@ -7,7 +7,9 @@ from pathlib import Path
 import gin
 import pandas as pd
 
-from moretro.inference.heuristic_functions import COST_MAPPING
+from moretro.inference.calculate_costs import cost_loader
+from moretro.inference.heuristic_functions import COST_MAPPING, heuristic_loader
+from moretro.utils.base_paths import ROOT_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +25,7 @@ def prepare_starting_mols(file_path: str | Path) -> set[str]:
     Returns:
         set[str]: Set of building blocks (SMILES
     """
-    dir_path = Path(__file__).parent.parent
+    dir_path = ROOT_DIR
     file_path = dir_path / Path(file_path)
     if file_path.suffix == ".csv":
         starting_mol = set(pd.read_csv(file_path)["smiles"].tolist())
@@ -42,6 +44,8 @@ def prepare_starting_mols(file_path: str | Path) -> set[str]:
 
 @gin.configurable()
 def prepare_heuristic_fns(heuristics: list[str]) -> Sequence[Callable[[str], float]]:
+    for heuristic in heuristics:
+        heuristic_loader(heuristic)
     heuristic_fs = []
     for heuristic in heuristics:
         if heuristic in COST_MAPPING:
@@ -54,5 +58,7 @@ def prepare_heuristic_fns(heuristics: list[str]) -> Sequence[Callable[[str], flo
     return heuristic_fs
 
 
-def prepare_condition_model():
-    pass
+@gin.configurable()
+def prepare_cost_models(cost_functions: list[str], device: str) -> None:
+    for cost in cost_functions:
+        cost_loader(cost, device)
