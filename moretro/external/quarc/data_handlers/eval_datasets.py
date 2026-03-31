@@ -238,17 +238,21 @@ class UnifiedEvaluationDataset:
             bin_labels[i] = label
         return bin_labels
 
-    def generate_fingerprint(self, agent_records: list[AgentRecord]) -> np.ndarray:
+    def generate_fingerprint(self, agent_records: list[AgentRecord]) -> torch.Tensor:
+        from rdkit import DataStructs
         smi_list = [agent_record.smiles for agent_record in agent_records]
         merged_smi = ".".join(smi_list)
         mol = Chem.MolFromSmiles(merged_smi)
 
-        fp_arr = np.zeros((2048,), dtype=bool)
         if mol is not None and mol.GetNumHeavyAtoms() > 0:
-            fp_arr = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+            fp_vect = rdMolDescriptors.GetMorganFingerprintAsBitVect(
                 mol, radius=self.fp_radius, nBits=self.fp_length
             )
-        return torch.tensor(fp_arr, dtype=torch.bool)
+            arr = np.zeros((self.fp_length,), dtype=np.int8)
+            DataStructs.ConvertToNumpyArray(fp_vect, arr)
+            return torch.from_numpy(arr).to(torch.bool)
+        else:
+            return torch.zeros((self.fp_length,), dtype=torch.bool)
 
     def generate_reaction_fingerprint(self, reaction_datum: ReactionDatum) -> torch.Tensor:
         FP_r = self.generate_fingerprint(reaction_datum.reactants)
