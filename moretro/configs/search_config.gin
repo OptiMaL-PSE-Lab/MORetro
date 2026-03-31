@@ -19,6 +19,7 @@ time_budget = 0 # seconds -> 0 no limit
 max_node_depth = 15 
 stop_on_full_pareto = True # stop search if full pareto front is reached
 exclude_dominated_nodes = False # prune nodes during search
+epsilon_pruning = 0 # construct epsilon PF (0 means exact PF)
 
 # Macros Weight Parameters
 sampling_strategy = "bo" # ["bo", "queue"]
@@ -64,6 +65,7 @@ MOSearch.single_step_call_budget = %single_step_call_budget
 MOSearch.max_pareto_solutions = %max_pareto_solutions
 MOSearch.stop_on_full_pareto = %stop_on_full_pareto
 MOSearch.exclude_dominated_nodes = %exclude_dominated_nodes
+MOSearch.epsilon_pruning = %epsilon_pruning
 
 # Retro model
 retro_prediction.OneStepModel.model_type = %single_step_model

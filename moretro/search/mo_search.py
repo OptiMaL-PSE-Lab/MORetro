@@ -50,6 +50,8 @@ class MOSearch:
         Whether to stop search when the full Pareto front is found.
     exclude_dominated_nodes : bool, default False
         Whether to exclude nodes dominated by the current Pareto front from expansion.
+    epsilon_pruning : float, default 0.0
+        A positive float added to each objective of open nodes to aggressively prune nodes.
     """
 
     def __init__(
@@ -67,6 +69,7 @@ class MOSearch:
         max_pareto_solutions: int = 250,
         stop_on_full_pareto: bool = False,
         exclude_dominated_nodes: bool = False,
+        epsilon_pruning: float = 0.0,
     ):
         self.max_depth = 2 * max_depth
         self.retro_model = retro_model
@@ -89,6 +92,7 @@ class MOSearch:
         self.max_pareto_solutions = max_pareto_solutions
         self.stop_on_full_pareto = stop_on_full_pareto
         self.exclude_dominated_nodes = exclude_dominated_nodes
+        self.epsilon_pruning = epsilon_pruning
         self.weights_open: list[bool] = [True] * self.search_graph.no_weights
         self.retro_expansion_count = 0
 
@@ -120,7 +124,7 @@ class MOSearch:
         Returns True if a node is dominated by any point in the current Pareto front.
         """
         graph = self.search_graph
-        best_value = np.round(np.array(node.best_total_value), 3)
+        best_value = np.round(np.array(node.best_total_value), 3) + self.epsilon_pruning
         graph_pareto_front = graph.pareto_front_costs
         if graph_pareto_front.size == 0:
             return False
