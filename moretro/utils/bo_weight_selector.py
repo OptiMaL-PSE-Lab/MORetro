@@ -60,6 +60,7 @@ class BOWeightSelector:
     ):
         self.n_obj = n_obj
         self.rng = np.random.default_rng(seed=seed)
+        torch.manual_seed(seed)
         self.kappa = kappa
         self.n_warmup = n_warmup
         self.decay_factor = decay_factor
