@@ -516,7 +516,6 @@ class MOGraph:
         """
         Spawn new weights and reinitialize all node values.
         """
-        logger.info("Reinitializing values in search graph")
         if self.weight_initial == "constant":
             logger.warning(
                 "Weight initialization is set to 'constant'. Reinitialization will not change weights."
@@ -534,12 +533,10 @@ class MOGraph:
             new_nodes, _ = self.uppropagation(updated_nodes)
             updated_nodes.update(new_nodes)
             downprop_updated, downprop_processed = self.downpropagation(updated_nodes)
-            # Get all nodes in the graph for comparison
-            all_graph_nodes = set(self.graph.nodes)
             logger.info("Reinitialization of weights completed")
-            logger.info(f"Total nodes in graph: {len(all_graph_nodes)}")
-            logger.info(f"Nodes processed during downprop: {len(downprop_processed)}")
-            logger.info(f"Nodes updated during downprop: {len(downprop_updated)}")
+            logger.info(
+                f"Nodes processed vs updated during downprop: {len(downprop_processed)} vs {len(downprop_updated)}"
+            )
 
     def update_weights(self) -> None:
         """

@@ -386,7 +386,10 @@ class MOSearch:
                     iter_counter, early_resampling=True
                 )
                 self.weights_open = [True] * self.search_graph.no_weights
-            logger.info(f"Completed iteration {iter_counter}/{self.iteration_budget}.")
+            if iter_counter % 10 == 0:
+                logger.info(
+                    f"Completed iteration {iter_counter}/{self.iteration_budget}."
+                )
             iter_counter += 1
             weight_iter += 1
             elapsed_time = time.time() - start_time
