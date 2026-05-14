@@ -11,7 +11,7 @@ Parameters in `search_config.gin` are grouped below. Edit them directly — chan
 | `device` | `"cuda"` | `"cpu"`, `"cuda"` | Hardware used for all ML models |
 | `single_step_model` | `"template"` | `"template"`, `"pdvn"`, `"g2e"` | Retrosynthesis model. Use `"pdvn"` or `"g2e"` with `policy_cost` in `objective_functions` |
 | `single_step_topk` | `25` | integer | Top-k predictions returned per single-step model call |
-| `building_blocks` | `"origin_dict.csv"` | filename | Building block set used during search (must be in `data/`) |
+| `building_blocks` | `"origin_dict.csv"` | filename | Building block set used during search (resolved relative to `models/`) |
 
 ---
 
