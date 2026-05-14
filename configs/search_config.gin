@@ -4,7 +4,7 @@ import moretro.moretro_star
 device = "cuda" # used for ML models
 single_step_model = "template" # ["template", "pdvn", "g2e"]
 single_step_topk = 25
-building_blocks = "models/origin_dict.csv"
+building_blocks = "origin_dict.csv"
 
 # Macros Objectives
 objective_functions = ["sustainability_cost", "scaleup_cost", "toxicity_cost", "convergence_cost"] # use policy_cost for PDVN/G2E
