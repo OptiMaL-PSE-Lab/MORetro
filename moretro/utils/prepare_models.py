@@ -23,7 +23,7 @@ def prepare_starting_mols(file_path: str | Path) -> set[str]:
         file_path (str): Path to the file containing building blocks
 
     Returns:
-        set[str]: Set of building blocks (SMILES
+        set[str]: Set of building block SMILES strings
     """
     file_path = MODELS_DIR / Path(file_path)
     if file_path.suffix == ".csv":
