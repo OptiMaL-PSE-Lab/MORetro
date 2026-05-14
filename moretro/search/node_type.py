@@ -257,7 +257,7 @@ class MolNode:
             if self.zero_bound:
                 best_rxn_no = np.zeros(
                     self.pareto_objectives
-                )  # * Enhancement: add epsilon constraint
+                )  
             else:
                 best_rxn_no = np.array(self.value_estimates)[: self.pareto_objectives]
         elif len(children) > 0:  # interior node with children

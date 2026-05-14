@@ -660,7 +660,7 @@ class TestMOSearchRealWorldScenario:
         test_dir = os.path.dirname(__file__)
         project_root = os.path.dirname(test_dir)
         config_path = os.path.join(
-            project_root, "moretro", "configs", "test_config.gin"
+            project_root, "configs", "test_config.gin"
         )
 
         if not os.path.exists(config_path):

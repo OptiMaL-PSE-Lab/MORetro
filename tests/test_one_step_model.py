@@ -29,7 +29,7 @@ class TestOneStepModelPrediction:
 
         # Load the gin configuration
         config_path = os.path.join(
-            project_root, "moretro", "configs", "search_config.gin"
+            project_root, "configs", "search_config.gin"
         )
 
         if not os.path.exists(config_path):

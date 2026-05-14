@@ -2,6 +2,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from moretro.utils.base_paths import LOG_DIR
+
 import gin
 import numpy as np
 import torch
@@ -285,7 +287,7 @@ class BOWeightSelector:
             ax.set_ylabel("w2")
             ax.set_zlabel("w3")
             ax.view_init(elev=30, azim=45)
-            out_dir = Path(__file__).parent.parent.parent / "logs" / "weight_selection"
+            out_dir = LOG_DIR / "weight_selection"
             out_dir.mkdir(exist_ok=True, parents=True)
             out_file = out_dir / f"bo_weights_{len(self.weights_history)}.png"
             fig.tight_layout()
