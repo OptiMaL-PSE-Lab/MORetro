@@ -52,7 +52,7 @@ class LogPPredictor:
             )
 
         try:
-            self.model = MPNN.load_from_checkpoint(
+            self.model = MPNN.load_from_file(
                 self.checkpoint_path, map_location=self.device
             )
             self.model.to(self.device)
