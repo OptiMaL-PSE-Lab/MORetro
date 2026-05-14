@@ -1,0 +1,1 @@
+CCn1nc(C)cc1C(=O)Nc1nc2cc(C(N)=O)ccc2n1CCCCn1c(NC(=O)c2cc(C)nn2CC)nc2cc(C(N)=O)cc(OC)c21
