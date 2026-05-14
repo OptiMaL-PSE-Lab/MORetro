@@ -42,8 +42,7 @@ jobs:
         pip install -e ".[dev]"
 
     - name: Run tests with pytest
-      run: |
-        pytest tests/ -v --tb=short
+      run: uv run --no-sync pytest tests/ -v --tb=short
 
   test-multi-os:
     runs-on: ${{ matrix.os }}
@@ -80,8 +79,7 @@ jobs:
         pip install -e ".[dev]"
 
     - name: Run tests with pytest
-      run: |
-        pytest tests/ -v --tb=short
+      run: uv run --no-sync pytest tests/ -v --tb=short
 
   lint:
     runs-on: ubuntu-latest
@@ -94,18 +92,9 @@ jobs:
         python-version: "3.12"
 
     - name: Install linting dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install --upgrade --force-reinstall torch --index-url https://download.pytorch.org/whl/cpu
-        pip install -e ".[lint]"
+      run: uv sync --dev --extra cpu
 
     - name: Run Ruff (lint only, no auto-fix)
       run: |
-        ruff check moretro/ --output-format=github
-        ruff format moretro/ --check --diff
-
-    - name: Run type checking with mypy
-      run: |
-        mypy moretro/ 
-      continue-on-error: true
-
+        uv run --no-sync ruff check moretro/ --output-format=github
+        uv run --no-sync ruff format moretro/ --check --diff
