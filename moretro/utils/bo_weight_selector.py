@@ -1,8 +1,5 @@
 import logging
-from pathlib import Path
 from typing import Any
-
-from moretro.utils.base_paths import LOG_DIR
 
 import gin
 import numpy as np
@@ -15,6 +12,8 @@ from gpytorch.constraints import Interval
 from gpytorch.mlls import ExactMarginalLogLikelihood
 from pymoo.indicators.hv import Hypervolume
 from scipy.spatial.distance import cdist
+
+from moretro.utils.base_paths import LOG_DIR
 
 # optional plotting
 plt = None

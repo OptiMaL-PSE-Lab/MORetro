@@ -19,12 +19,12 @@ from rdkit.Chem import Draw
 from moretro.inference.retro_prediction import OneStepModel
 from moretro.search.mo_search import MOSearch
 from moretro.search.node_type import MolNode, RxnNode
+from moretro.utils.base_paths import CONFIG_DIR, LOG_DIR
 from moretro.utils.prepare_models import (
     prepare_cost_models,
     prepare_heuristic_fns,
     prepare_starting_mols,
 )
-from moretro.utils.base_paths import CONFIG_DIR, LOG_DIR
 from moretro.utils.typing_hints import Path
 
 # set up logging in this main file

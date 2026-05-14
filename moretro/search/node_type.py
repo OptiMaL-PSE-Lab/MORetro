@@ -255,9 +255,7 @@ class MolNode:
         elif self.is_open:  # tip node of tree which is not a building block
             new_rxn_no = self.objectives_to_scalar(weights)
             if self.zero_bound:
-                best_rxn_no = np.zeros(
-                    self.pareto_objectives
-                )  
+                best_rxn_no = np.zeros(self.pareto_objectives)
             else:
                 best_rxn_no = np.array(self.value_estimates)[: self.pareto_objectives]
         elif len(children) > 0:  # interior node with children
