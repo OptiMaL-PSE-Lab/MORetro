@@ -848,7 +848,7 @@ if __name__ == "__main__":
         "--output_dir",
         type=str,
         default="my_run",
-        help="Directory to save output files",
+        help="Run name / output subdirectory under 'output/' for saved files",
     )
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--config_file", type=str, default="search_config.gin")
