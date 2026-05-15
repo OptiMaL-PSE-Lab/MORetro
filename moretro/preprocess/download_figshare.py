@@ -3,7 +3,10 @@
 Script to download files from the MORetro Figshare article.
 
 Usage:
-    python download_figshare.py [--project_root <dir>]
+    python download_figshare.py
+
+Downloaded files are written under the repository's ``models/`` directory,
+relative to ``Path(__file__).resolve().parents[2]``.
 
 Article: https://figshare.com/articles/software/Data_and_Models_for_MORetro_/30395614
 """
