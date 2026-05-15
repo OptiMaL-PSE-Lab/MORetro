@@ -36,7 +36,7 @@ Requires [Docker](https://docs.docker.com/get-docker/). For GPU runs, `nvidia-sm
 git clone https://github.com/fredhastedt/MORetro.git
 cd MORetro
 docker compose build          # CPU
-docker compose build --profile gpu  # GPU
+docker compose --profile gpu build  # GPU
 ```
 
 ---
