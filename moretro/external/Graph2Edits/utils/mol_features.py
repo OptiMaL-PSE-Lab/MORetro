@@ -26,64 +26,53 @@ ATOM_FDIM = len(ATOM_SYMBOL_LIST) + len(DEGREES) + len(FORMAL_CHARGE) + \
 BOND_FDIM = len(BOND_TYPES) + len(BONDSTEREO) + 2
 
 
+_ONE_HOT_CACHE = {}
 def one_of_k_encoding(x: Any, allowable_set: Union[List, Set]) -> List:
-    """Converts x to one hot encoding.
-
-    Parameters
-    ----------
-    x: Any,
-        An element of any type
-    allowable_set: Union[List, Set]
-        Allowable element collection
-    """
+    key = (x, id(allowable_set))
+    global _ONE_HOT_CACHE
+    if key in _ONE_HOT_CACHE:
+        return _ONE_HOT_CACHE[key]
+        
+    original_x = x
     if x not in allowable_set:
-        x = allowable_set[-1]
-    return list(map(lambda s: float(x == s), allowable_set))
+        x = list(allowable_set)[-1] if isinstance(allowable_set, set) else allowable_set[-1]
+        
+    res = [float(x == s) for s in allowable_set]
+    _ONE_HOT_CACHE[key] = res
+    return res
 
 
+_ATOM_CACHE = {}
 def get_atom_features(atom: Chem.Atom, rxn_class: int = None, use_rxn_class: bool = False) -> List[Union[bool, int, float]]:
-    """Get atom features.
-
-    Parameters
-    ----------
-    atom: Chem.Atom,
-        Atom object from RDKit
-    rxn_class: int, None
-        Reaction class the molecule was part of
-    use_rxn_class: bool, default False,
-        Whether to use reaction class as additional input
-    """
-    # if atom is None:
-    #     symbol = one_of_k_encoding('*', ATOM_SYMBOL_LIST)
-    #     if use_rxn_class:
-    #         padding = [0] * (ATOM_FDIM + len(RXN_CLASSES) - len(symbol))
-    #     else:
-    #         padding = [0] * (ATOM_FDIM - len(symbol))
-    #     feature_array = symbol + padding
-    #     return feature_array
-
-    # else:
+    key = (atom.GetSymbol(), atom.GetDegree(), atom.GetFormalCharge(),
+           atom.GetHybridization(), atom.GetTotalValence(), atom.GetTotalNumHs(),
+           int(atom.GetChiralTag()), atom.GetIsAromatic(),
+           rxn_class if use_rxn_class else None, use_rxn_class)
+    global _ATOM_CACHE
+    if key in _ATOM_CACHE:
+        return _ATOM_CACHE[key]
+        
     if use_rxn_class:
-        atom_features = one_of_k_encoding(atom.GetSymbol(), ATOM_SYMBOL_LIST) + \
-            one_of_k_encoding(atom.GetDegree(), DEGREES) + \
-            one_of_k_encoding(atom.GetFormalCharge(), FORMAL_CHARGE) + \
-            one_of_k_encoding(atom.GetHybridization(), HYBRIDIZATION) + \
-            one_of_k_encoding(atom.GetTotalValence(), VALENCE) + \
-            one_of_k_encoding(atom.GetTotalNumHs(), NUM_Hs) + \
-            one_of_k_encoding(int(atom.GetChiralTag()), CHIRALTAG) + \
-            [atom.GetIsAromatic()] + one_of_k_encoding(rxn_class, RXN_CLASSES)
-        return atom_features
-
+        atom_features = (one_of_k_encoding(atom.GetSymbol(), ATOM_SYMBOL_LIST) +
+            one_of_k_encoding(atom.GetDegree(), DEGREES) +
+            one_of_k_encoding(atom.GetFormalCharge(), FORMAL_CHARGE) +
+            one_of_k_encoding(atom.GetHybridization(), HYBRIDIZATION) +
+            one_of_k_encoding(atom.GetTotalValence(), VALENCE) +
+            one_of_k_encoding(atom.GetTotalNumHs(), NUM_Hs) +
+            one_of_k_encoding(int(atom.GetChiralTag()), CHIRALTAG) +
+            [atom.GetIsAromatic()] + one_of_k_encoding(rxn_class, RXN_CLASSES))
     else:
-        atom_features = one_of_k_encoding(atom.GetSymbol(), ATOM_SYMBOL_LIST) + \
-            one_of_k_encoding(atom.GetDegree(), DEGREES) + \
-            one_of_k_encoding(atom.GetFormalCharge(), FORMAL_CHARGE) + \
-            one_of_k_encoding(atom.GetHybridization(), HYBRIDIZATION) + \
-            one_of_k_encoding(atom.GetTotalValence(), VALENCE) + \
-            one_of_k_encoding(atom.GetTotalNumHs(), NUM_Hs) + \
-            one_of_k_encoding(int(atom.GetChiralTag()), CHIRALTAG) + \
-            [atom.GetIsAromatic()]
-        return atom_features
+        atom_features = (one_of_k_encoding(atom.GetSymbol(), ATOM_SYMBOL_LIST) +
+            one_of_k_encoding(atom.GetDegree(), DEGREES) +
+            one_of_k_encoding(atom.GetFormalCharge(), FORMAL_CHARGE) +
+            one_of_k_encoding(atom.GetHybridization(), HYBRIDIZATION) +
+            one_of_k_encoding(atom.GetTotalValence(), VALENCE) +
+            one_of_k_encoding(atom.GetTotalNumHs(), NUM_Hs) +
+            one_of_k_encoding(int(atom.GetChiralTag()), CHIRALTAG) +
+            [atom.GetIsAromatic()])
+            
+    _ATOM_CACHE[key] = atom_features
+    return atom_features
 
 
 def get_bond_features(bond: Chem.Bond) -> List[Union[bool, int, float]]:

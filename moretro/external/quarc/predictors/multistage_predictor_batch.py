@@ -339,20 +339,22 @@ def _topk_cartesian_product(
 
 
 def _dedup_and_top_k(
-    results: List[Tuple[torch.Tensor, float]],
+    results: List[Tuple[torch.Tensor, float, frozenset[int]]],
     k: int,
-    device: str | torch.device = "cpu",
-) -> List[Tuple[torch.Tensor, float]]:
-    score_map: dict[Tuple[int, ...], float] = {}
-    for agent_vec, score in results:
-        key = tuple(agent_vec.to("cpu").view(-1).tolist())
-        score_map[key] = score_map.get(key, 0.0) + float(score)
+) -> List[Tuple[torch.Tensor, float, frozenset[int]]]:
+    score_map: dict[frozenset[int], float] = {}
+    tensor_map: dict[frozenset[int], torch.Tensor] = {}
+    
+    for agent_vec, score, agent_set in results:
+        if agent_set in score_map:
+            score_map[agent_set] += float(score)
+        else:
+            score_map[agent_set] = float(score)
+            tensor_map[agent_set] = agent_vec
+            
     items = [
-        (
-            torch.tensor(list(key), dtype=torch.float, device=device),
-            float(val),
-        )
-        for key, val in score_map.items()
+        (tensor_map[agent_set], val, agent_set)
+        for agent_set, val in score_map.items()
     ]
     items.sort(key=lambda x: x[1], reverse=True)
     return items[:k]
@@ -372,10 +374,10 @@ def _batched_beam_search_ffn(
     FP_inputs_list = [fp.to(device) for fp in FP_inputs_list]
 
     # Initialize per-sample beams
-    active_beams: List[List[Tuple[torch.Tensor, float]]] = [
-        [(torch.zeros(num_classes, dtype=torch.float, device=device), 1.0)] for _ in range(B)
+    active_beams: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [
+        [(torch.zeros(num_classes, dtype=torch.float, device=device), 1.0, frozenset())] for _ in range(B)
     ]
-    completed: List[List[Tuple[torch.Tensor, float]]] = [[] for _ in range(B)]
+    completed: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [[] for _ in range(B)]
 
     for _ in range(max_steps):
         # Flatten current beams across all samples
@@ -384,7 +386,7 @@ def _batched_beam_search_ffn(
         owner: List[int] = []  # which sample this beam belongs to
 
         for i in range(B):
-            for agent_vec, _score in active_beams[i]:
+            for agent_vec, _score, _agent_set in active_beams[i]:
                 batch_FP.append(FP_inputs_list[i])
                 batch_agents.append(agent_vec)
                 owner.append(i)
@@ -403,14 +405,14 @@ def _batched_beam_search_ffn(
         top_scores, top_idx = torch.topk(probs, k=beam_size, dim=-1)
 
         # Build next beams per sample
-        new_active: List[List[Tuple[torch.Tensor, float]]] = [[] for _ in range(B)]
+        new_active: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [[] for _ in range(B)]
         # Rebuild an iterator in the same order as stacking
         flat_iter = []
         for i in range(B):
             for item in active_beams[i]:
                 flat_iter.append((i, item))
 
-        for g, (i, (curr_agents, curr_score)) in enumerate(flat_iter):
+        for g, (i, (curr_agents, curr_score, curr_set)) in enumerate(flat_iter):
             k_scores = top_scores[g].tolist()
             k_idx = top_idx[g].tolist()
             curr_agents_2d = curr_agents.unsqueeze(0) if curr_agents.dim() == 1 else curr_agents
@@ -419,14 +421,15 @@ def _batched_beam_search_ffn(
                 new_agents = curr_agents_2d.clone()
                 new_score = float(curr_score) * float(p)
                 if agent_j == eos_id:
-                    completed[i].append((new_agents.squeeze(0), new_score))
+                    completed[i].append((new_agents.squeeze(0), new_score, curr_set))
                 else:
                     new_agents[0][agent_j] = 1
-                    new_active[i].append((new_agents.squeeze(0), new_score))
+                    new_set = curr_set.union([agent_j])
+                    new_active[i].append((new_agents.squeeze(0), new_score, new_set))
 
         # Trim beams per sample and remove duplicates
         for i in range(B):
-            active_beams[i] = _dedup_and_top_k(new_active[i], beam_size, device)
+            active_beams[i] = _dedup_and_top_k(new_active[i], beam_size)
 
         # Early exit if no active beams
         if all(len(ab) == 0 for ab in active_beams):
@@ -435,8 +438,8 @@ def _batched_beam_search_ffn(
     # Return top results per sample
     outputs: List[List[Tuple[torch.Tensor, float]]] = []
     for i in range(B):
-        outs = _dedup_and_top_k(completed[i], return_top_n, device)
-        outputs.append(outs)
+        outs = _dedup_and_top_k(completed[i], return_top_n)
+        outputs.append([(vec, score) for vec, score, _set in outs])
     return outputs
 
 
@@ -451,17 +454,17 @@ def _batched_beam_search_gnn(
     device: str = "cuda",
 ) -> List[List[Tuple[torch.Tensor, float]]]:
     B = len(mg_list)
-    active_beams: List[List[Tuple[torch.Tensor, float]]] = [
-        [(torch.zeros(num_classes, dtype=torch.float, device=device), 1.0)] for _ in range(B)
+    active_beams: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [
+        [(torch.zeros(num_classes, dtype=torch.float, device=device), 1.0, frozenset())] for _ in range(B)
     ]
-    completed: List[List[Tuple[torch.Tensor, float]]] = [[] for _ in range(B)]
+    completed: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [[] for _ in range(B)]
 
     for _ in range(max_steps):
         batch_agents: List[torch.Tensor] = []
         batch_mgs: List[Any] = []
 
         for i in range(B):
-            for agent_vec, _score in active_beams[i]:
+            for agent_vec, _score, _set in active_beams[i]:
                 batch_agents.append(agent_vec)
                 batch_mgs.append(mg_list[i])
 
@@ -479,13 +482,13 @@ def _batched_beam_search_gnn(
 
         top_scores, top_idx = torch.topk(probs, k=beam_size, dim=-1)
 
-        new_active: List[List[Tuple[torch.Tensor, float]]] = [[] for _ in range(B)]
+        new_active: List[List[Tuple[torch.Tensor, float, frozenset[int]]]] = [[] for _ in range(B)]
         flat_iter = []
         for i in range(B):
             for item in active_beams[i]:
                 flat_iter.append((i, item))
 
-        for g, (i, (curr_agents, curr_score)) in enumerate(flat_iter):
+        for g, (i, (curr_agents, curr_score, curr_set)) in enumerate(flat_iter):
             k_scores = top_scores[g].tolist()
             k_idx = top_idx[g].tolist()
             curr_agents_2d = curr_agents.unsqueeze(0) if curr_agents.dim() == 1 else curr_agents
@@ -494,21 +497,22 @@ def _batched_beam_search_gnn(
                 new_agents = curr_agents_2d.clone()
                 new_score = float(curr_score) * float(p)
                 if agent_j == eos_id:
-                    completed[i].append((new_agents.squeeze(0), new_score))
+                    completed[i].append((new_agents.squeeze(0), new_score, curr_set))
                 else:
                     new_agents[0][agent_j] = 1
-                    new_active[i].append((new_agents.squeeze(0), new_score))
+                    new_set = curr_set.union([agent_j])
+                    new_active[i].append((new_agents.squeeze(0), new_score, new_set))
 
         for i in range(B):
-            active_beams[i] = _dedup_and_top_k(new_active[i], beam_size, device)
+            active_beams[i] = _dedup_and_top_k(new_active[i], beam_size)
 
         if all(len(ab) == 0 for ab in active_beams):
             break
 
     outputs: List[List[Tuple[torch.Tensor, float]]] = []
     for i in range(B):
-        outs = _dedup_and_top_k(completed[i], return_top_n, device)
-        outputs.append(outs)
+        outs = _dedup_and_top_k(completed[i], return_top_n)
+        outputs.append([(vec, score) for vec, score, _set in outs])
     return outputs
 
 

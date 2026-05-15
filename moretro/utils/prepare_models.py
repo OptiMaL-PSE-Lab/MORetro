@@ -9,7 +9,7 @@ import pandas as pd
 
 from moretro.inference.calculate_costs import cost_loader
 from moretro.inference.heuristic_functions import COST_MAPPING, heuristic_loader
-from moretro.utils.base_paths import ROOT_DIR
+from moretro.utils.base_paths import MODELS_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,9 @@ def prepare_starting_mols(file_path: str | Path) -> set[str]:
         file_path (str): Path to the file containing building blocks
 
     Returns:
-        set[str]: Set of building blocks (SMILES
+        set[str]: Set of building block SMILES strings
     """
-    dir_path = ROOT_DIR
-    file_path = dir_path / Path(file_path)
+    file_path = MODELS_DIR / Path(file_path)
     if file_path.suffix == ".csv":
         starting_mol = set(pd.read_csv(file_path)["smiles"].tolist())
     elif file_path.suffix == ".pkl":

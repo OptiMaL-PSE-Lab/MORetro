@@ -1,3 +1,4 @@
+import json
 import logging
 import logging.config as conf
 import os
@@ -6,6 +7,7 @@ import pprint
 import tempfile
 from pathlib import Path as PathLib
 from typing import Any
+from uuid import uuid4
 
 import gin
 import graphviz
@@ -17,6 +19,7 @@ from rdkit.Chem import Draw
 from moretro.inference.retro_prediction import OneStepModel
 from moretro.search.mo_search import MOSearch
 from moretro.search.node_type import MolNode, RxnNode
+from moretro.utils.base_paths import CONFIG_DIR, LOG_DIR
 from moretro.utils.prepare_models import (
     prepare_cost_models,
     prepare_heuristic_fns,
@@ -28,9 +31,14 @@ from moretro.utils.typing_hints import Path
 logger = logging.getLogger("moretro")
 
 
-# * Enhancement: Safe json file with synthesis routes
 class MORetro:
-    def __init__(self, target: str, visualize_plots: bool = True):
+    def __init__(
+        self,
+        target: str,
+        output_dir: str = "output/my_run",
+        visualize_plots: bool = True,
+        save_json: bool = False,
+    ):
         retro_model = OneStepModel(gin.REQUIRED)  # type: ignore
         building_blocks = prepare_starting_mols(gin.REQUIRED)  # type: ignore
         heuristic_fns = prepare_heuristic_fns(gin.REQUIRED)  # type: ignore
@@ -39,7 +47,9 @@ class MORetro:
             target, retro_model, building_blocks, heuristic_fns, gin.REQUIRED
         )  # type: ignore
         self.target = target
+        self.output_dir = output_dir
         self.visualize_plots = visualize_plots
+        self.save_json = save_json
 
     def search(self):
         """
@@ -53,18 +63,22 @@ class MORetro:
         finally:
             # Save all solution costs as pickle
             safe_target_name = self._safe_smiles_dirname(self.target)
-            os.makedirs(f"figs/{args.output_dir}/{safe_target_name}", exist_ok=True)
-            pickle_path = (
-                f"figs/{args.output_dir}/{safe_target_name}/solution_costs.pkl"
-            )
+            target_dir = f"{self.output_dir}/{safe_target_name}"
+            os.makedirs(target_dir, exist_ok=True)
+            pickle_path = f"{target_dir}/solution_costs.pkl"
             with open(pickle_path, "wb") as f:
                 pickle.dump(self.mo_search.search_graph.solution_cost, f)
             logger.info(f"Saved all solution costs to {pickle_path}")
+            if self.save_json:
+                self.save_all_routes_as_json(self.output_dir)
+                logger.info("Saved all routes as JSON")
             if self.visualize_plots:
-                self.visualize_all_solutions()
-                logger.info("Creating plots for target and saving in ./figs directory")
-                self.plot_pareto_front()
-                self.plot_pareto_with_dominated()
+                self.visualize_all_solutions(self.output_dir)
+                logger.info(
+                    f"Creating plots for target and saving in {self.output_dir}"
+                )
+                self.plot_pareto_front(f"{target_dir}/pareto_front")
+                self.plot_pareto_with_dominated(f"{target_dir}/pareto_with_dominated")
             solution_summary = self.get_solution_summary()
             logger.info(
                 "Solution summary: \n" + pprint.pformat(solution_summary, indent=2)
@@ -158,6 +172,156 @@ class MORetro:
             penwidth="2",
         )
 
+    def _path_to_route_dict(self, path, cost_vector, is_pareto: bool) -> dict:
+        path_set = set(path)
+        node_ids = {node: str(uuid4()) for node in path}
+        graph = self.mo_search.search_graph.graph
+
+        nodes = []
+        for node in path:
+            if isinstance(node, MolNode):
+                nodes.append(
+                    {
+                        "id": node_ids[node],
+                        "type": "mol",
+                        "smiles": node.smiles,
+                        "is_target": bool(node.is_target),
+                        "is_known": bool(node.is_known),
+                        "depth": int(node.depth) // 2,
+                    }
+                )
+            else:
+                if node.temp is None:
+                    temp_val = None
+                else:
+                    try:
+                        temp_val = float(node.temp)
+                    except (ValueError, TypeError):
+                        temp_val = str(node.temp)
+                nodes.append(
+                    {
+                        "id": node_ids[node],
+                        "type": "reaction",
+                        "smiles": node.smiles,
+                        "template": node.template,
+                        "reagents": list(node.reagents),
+                        "temperature_K": temp_val,
+                        "cost": node.true_cost.tolist(),
+                        "depth": (int(node.depth) + 1) // 2,
+                    }
+                )
+
+        edges = []
+        for node in path:
+            for successor in graph.successors(node):
+                if successor in path_set:
+                    edges.append({"from": node_ids[node], "to": node_ids[successor]})
+
+        num_reactions = sum(1 for n in path if isinstance(n, RxnNode))
+        depth = max(int(n.depth) for n in path) // 2
+
+        return {
+            "target_smiles": self.target,
+            "cost_vector": list(cost_vector),
+            "is_pareto": is_pareto,
+            "num_reactions": num_reactions,
+            "depth": depth,
+            "nodes": nodes,
+            "edges": edges,
+        }
+
+    def save_pareto_routes_as_json(self, output_dir: str) -> list[dict]:
+        if not PathLib(output_dir).exists():
+            PathLib(output_dir).mkdir(parents=True, exist_ok=True)
+
+        pareto_front = self.mo_search.search_graph.pareto_front
+        solution_cost = self.mo_search.search_graph.solution_cost
+
+        entries = []
+        for i, (cost_vector, _) in enumerate(pareto_front.items()):
+            if cost_vector not in solution_cost:
+                continue
+            path, _ = solution_cost[cost_vector]
+            route_dict = self._path_to_route_dict(path, cost_vector, is_pareto=True)
+            filename = f"pareto_route_{i + 1}.json"
+            filepath = str(PathLib(output_dir) / filename)
+            with open(filepath, "w") as f:
+                json.dump(route_dict, f, indent=2)
+            entries.append(
+                {
+                    "file": str(PathLib(output_dir).name + "/" + filename),
+                    "cost_vector": list(cost_vector),
+                }
+            )
+            logger.debug(f"Saved Pareto route {i + 1} to {filepath}")
+
+        return entries
+
+    def save_dominated_routes_as_json(
+        self, output_dir: str, max_solutions: int = 100
+    ) -> list[dict]:
+        if not PathLib(output_dir).exists():
+            PathLib(output_dir).mkdir(parents=True, exist_ok=True)
+
+        pareto_front = self.mo_search.search_graph.pareto_front
+        solution_cost = self.mo_search.search_graph.solution_cost
+
+        dominated = [
+            (cost, path)
+            for cost, (path, _) in solution_cost.items()
+            if cost not in pareto_front
+        ][:max_solutions]
+
+        entries = []
+        for i, (cost_vector, path) in enumerate(dominated):
+            route_dict = self._path_to_route_dict(path, cost_vector, is_pareto=False)
+            filename = f"dominated_route_{i + 1}.json"
+            filepath = str(PathLib(output_dir) / filename)
+            with open(filepath, "w") as f:
+                json.dump(route_dict, f, indent=2)
+            entries.append(
+                {
+                    "file": str(PathLib(output_dir).name + "/" + filename),
+                    "cost_vector": list(cost_vector),
+                }
+            )
+
+        return entries
+
+    def _save_solution_summary(
+        self, output_dir: str, pareto_entries: list, dominated_entries: list
+    ):
+        pareto_front = self.mo_search.search_graph.pareto_front
+        solution_cost = self.mo_search.search_graph.solution_cost
+        total = len(solution_cost)
+        n_pareto = len(pareto_front)
+        summary = {
+            "target_smiles": self.target,
+            "total_solutions": total,
+            "pareto_solutions": n_pareto,
+            "dominated_solutions": total - n_pareto,
+            "pareto_routes": pareto_entries,
+            "dominated_routes": dominated_entries,
+        }
+        filepath = str(PathLib(output_dir) / "solution_summary.json")
+        with open(filepath, "w") as f:
+            json.dump(summary, f, indent=2)
+        logger.debug(f"Saved solution summary to {filepath}")
+
+    def save_all_routes_as_json(self, output_dir: str = "output"):
+        safe_target_name = self._safe_smiles_dirname(self.target)
+        target_dir = str(PathLib(output_dir) / safe_target_name)
+        PathLib(target_dir).mkdir(parents=True, exist_ok=True)
+
+        pareto_dir = str(PathLib(target_dir) / "pareto")
+        dominated_dir = str(PathLib(target_dir) / "dominated")
+
+        pareto_entries = self.save_pareto_routes_as_json(pareto_dir)
+        dominated_entries = self.save_dominated_routes_as_json(dominated_dir)
+        self._save_solution_summary(target_dir, pareto_entries, dominated_entries)
+
+        logger.info(f"All JSON routes saved to {target_dir}")
+
     def visualize_pareto_solutions(self, output_dir: str):
         """
         Visualize all Pareto-optimal synthesis routes using direct path visualization.
@@ -218,7 +382,7 @@ class MORetro:
             output_path = str(PathLib(output_dir) / f"dominated_route_{i + 1}")
             self._visualize_path(path, output_path, title)
 
-    def visualize_all_solutions(self, output_dir: str = "figs"):
+    def visualize_all_solutions(self, output_dir: str = "output"):
         """
         Visualize both Pareto-optimal and dominated synthesis routes using direct visualization.
 
@@ -291,7 +455,7 @@ class MORetro:
         ----------
         output_path : str
             File path to save the plot (without extension). If None, will save to
-            figs/{target_smiles}/pareto_front
+            output/{target_smiles}/pareto_front
         figsize : tuple[int, int]
             Figure size (width, height)
         show_weights : bool
@@ -305,10 +469,9 @@ class MORetro:
             logger.warning("No Pareto solutions found to plot.")
             return
 
-        # Set default output path if not provided
         if output_path is None:
             safe_target_name = self._safe_smiles_dirname(self.target)
-            output_path = f"figs/{safe_target_name}/pareto_front"
+            output_path = f"{self.output_dir}/{safe_target_name}/pareto_front"
 
         if not PathLib(output_path).parent.exists():
             PathLib(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -375,7 +538,7 @@ class MORetro:
         ----------
         output_path : str
             File path to save the plot (without extension). If None, will save to
-            figs/{target_smiles}/pareto_with_dominated
+            output/{target_smiles}/pareto_with_dominated
         figsize : tuple[int, int]
             Figure size (width, height)
         show_weights : bool
@@ -390,10 +553,9 @@ class MORetro:
             logger.warning("No Pareto solutions found to plot.")
             return
 
-        # Set default output path if not provided
         if output_path is None:
             safe_target_name = self._safe_smiles_dirname(self.target)
-            output_path = f"figs/{safe_target_name}/pareto_with_dominated"
+            output_path = f"{self.output_dir}/{safe_target_name}/pareto_with_dominated"
 
         if not PathLib(output_path).parent.exists():
             PathLib(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -555,7 +717,7 @@ class MORetro:
             ax.scatter(
                 dominated_costs[:, 0],
                 dominated_costs[:, 1],
-                dominated_costs[:, 2],
+                dominated_costs[:, 2],  # type: ignore
                 c="gray",
                 s=50,  # type: ignore
                 alpha=0.3,
@@ -566,7 +728,7 @@ class MORetro:
         ax.scatter(
             costs_array[:, 0],
             costs_array[:, 1],
-            costs_array[:, 2],
+            costs_array[:, 2],  # type: ignore
             c="red",
             s=100,  # type: ignore
             alpha=0.7,
@@ -685,8 +847,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="output",
-        help="Directory to save output files",
+        default="my_run",
+        help="Run name / output subdirectory under 'output/' for saved files",
     )
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--config_file", type=str, default="search_config.gin")
@@ -695,15 +857,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to visualize synthesis routes.",
     )
+    parser.add_argument(
+        "--save_json",
+        action="store_true",
+        help="Whether to save synthesis routes as JSON files.",
+    )
     args = parser.parse_args()
 
     # overwrite file save location for logger config
-    new_log_path = f"logs/{args.output_dir}.log"
+    new_log_path = str(LOG_DIR / f"{args.output_dir}.log")
     os.makedirs(os.path.dirname(new_log_path), exist_ok=True)
 
     # Configure logging dynamically
     config = configparser.ConfigParser()
-    config.read("moretro/configs/logging.conf")
+    config.read(CONFIG_DIR / "logging.conf")
 
     # Update the log file path in the configuration
     # The args are stored as a string representation of a tuple: ('path', 'mode')
@@ -715,11 +882,14 @@ if __name__ == "__main__":
         config_buffer.seek(0)
         conf.fileConfig(config_buffer, disable_existing_loggers=False)
 
-    gin.parse_config_file(f"moretro/configs/{args.config_file}")
+    gin.parse_config_file(CONFIG_DIR / args.config_file)
 
     mol_file = pd.read_csv(args.dataset, header=None, sep=",")
     for target_smiles in mol_file[0].tolist():
         moretro = MORetro(
-            target_smiles, args.visualize
-        )  # NOTE Ensure that smiles are in the right column
+            target_smiles,
+            output_dir=f"output/{args.output_dir}",
+            visualize_plots=args.visualize,
+            save_json=args.save_json,
+        )
         moretro.search()
