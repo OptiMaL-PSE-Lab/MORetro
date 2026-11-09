@@ -6,6 +6,8 @@
 
 **MORetro\*** is a multi-objective retrosynthesis planning tool. Given a target molecule, it searches for synthesis routes that simultaneously optimise multiple objectives — such as sustainability, scalability and toxicity — and returns the full Pareto front of trade-off solutions.
 
+Presented at **spotlight ICML2026**.
+
 ---
 
 ## Installation
@@ -200,4 +202,18 @@ uv sync --dev --extra cpu   # or --extra gpu for CUDA
 uv run pytest               # run tests
 uv run ruff check .         # lint
 uv run ruff format .        # format
+```
+
+## Citation 
+```
+@inproceedings{hastedt2026,
+  title = 	 {From Feasible to Practical: Pareto-Optimal Synthesis Planning},
+  author =       {Hastedt, Friedrich and Zhang, Dongda and Del Rio Chanona, Antonio},
+  booktitle = 	 {Proceedings of the 43rd International Conference on Machine Learning},
+  pages = 	 {40815--40835},
+  year = 	 {2026},
+  volume = 	 {306},
+  series = 	 {Proceedings of Machine Learning Research},
+  month = 	 {06--11 Jul},
+  publisher =    {PMLR},
 ```
