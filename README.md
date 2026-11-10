@@ -216,4 +216,5 @@ uv run ruff format .        # format
   series = 	 {Proceedings of Machine Learning Research},
   month = 	 {06--11 Jul},
   publisher =    {PMLR},
-```
+}
+``
