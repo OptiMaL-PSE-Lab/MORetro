@@ -6,7 +6,7 @@
 
 **MORetro\*** is a multi-objective retrosynthesis planning tool. Given a target molecule, it searches for synthesis routes that simultaneously optimise multiple objectives — such as sustainability, scalability and toxicity — and returns the full Pareto front of trade-off solutions.
 
-Presented at **spotlight ICML2026**.
+Presented at **ICML2026 (spotlight)**.
 
 ---
 
